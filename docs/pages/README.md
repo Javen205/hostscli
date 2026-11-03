@@ -1,21 +1,42 @@
-# hostscli 对外文档
+# hostscli 文档
 
-这里是 **hostscli**（跨平台 hosts 管理 CLI）的对外文档入口。所有内容描述当前版本的实际行为，不包含过程性计划或内部过程记录。
+> 不必从头读到尾。带着问题进来，按问题找入口。
 
-## 文档索引
+这套文档围绕一个判断展开：**hosts 改动应当是可解释、可回滚、可验证的**。下面的分组按"你此刻想回答什么"排列，而不是按文件顺序排列；每组先说明读完能带走什么，再给出入口。
 
-| 文档 | 一句话用途 |
-| --- | --- |
-| [product-overview.md](./product-overview.md) | 说明产品定位、目标用户、能力总览以及明确不做的事情 |
-| [cli-reference.md](./cli-reference.md) | 提供完整的命令、参数、输出格式、退出码与可复制示例 |
-| [architecture.md](./architecture.md) | 说明模块分层、写回数据流、关键不变量与扩展点 |
-| [platform-matrix.md](./platform-matrix.md) | 列出 macOS / Linux / Windows 的平台能力与验证状态 |
-| [tech-stack.md](./tech-stack.md) | 说明技术选型、依赖取舍、仓库结构与发布方式 |
+## 先判断值不值得用
 
-## 阅读顺序
+**读完你会知道**：它解决哪些具体麻烦、适合谁、哪些事它明确不做。
 
-1. 先看 [product-overview.md](./product-overview.md) 判断是否适合你的场景。
-2. 上手命令看 [cli-reference.md](./cli-reference.md)。
-3. 二次开发或排查写回行为看 [architecture.md](./architecture.md)。
-4. 跨平台差异看 [platform-matrix.md](./platform-matrix.md)。
-5. 参与贡献或评估技术选型看 [tech-stack.md](./tech-stack.md)。
+- [product-overview.md](./product-overview.md) —— 产品定位、目标用户、能力总览、托管方式与能力边界。
+
+如果你只关心"能不能替换掉现在的手改流程"，读这一篇就够。
+
+## 想确认它凭什么可靠
+
+**读完你会知道**：一次写入经过哪些步骤、失败如何回滚、围栏外内容为什么不会被改动，以及各平台究竟验证到了哪一步。
+
+- [architecture.md](./architecture.md) —— 分层、写回数据流、六条关键不变量与扩展点。
+- [platform-matrix.md](./platform-matrix.md) —— macOS / Linux / Windows 的路径、权限、行尾、DNS 与补全状态。
+
+判断可信度时，先看不变量，再看平台矩阵里标为"已验证 / 未验证 / 不支持"的差异；不要假设三平台行为一致。
+
+## 准备照着敲命令
+
+**读完你会知道**：每条命令的参数、输出字段、退出码，以及一段只操作临时文件的沙箱示例。
+
+- [cli-reference.md](./cli-reference.md) —— 21 个一级命令的完整契约与可复制示例。
+
+建议先跑沙箱示例，再决定是否去掉 `--file` 让改动落到真实 hosts。
+
+## 评估选型，或准备改代码
+
+**读完你会知道**：为什么是 Node.js + TypeScript、依赖为何这样取舍、仓库如何分层、发布链路怎么走。
+
+- [tech-stack.md](./tech-stack.md) —— 选型理由与代价、依赖清单、仓库结构、质量验证入口。
+
+如果目标机器没有 Node，先看这一篇的取舍部分，再决定是否继续。
+
+---
+
+文档描述当前版本的实际行为；示例默认不触碰系统 hosts。
