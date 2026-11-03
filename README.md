@@ -34,14 +34,18 @@ sudo hostscli add 10.0.0.12 api.example.com
 
 # 看当前托管区
 hostscli list
-# 10.0.0.12 │ api.example.com │ enabled │ managed
-# 托管 1 条，禁用 0 条，TTL 0 条，非托管 0 条
+# ┌───────────┬─────────────────┬─────────┬─────────┬─────────┐
+# │ IP        │ HOSTNAMES       │ STATUS  │ SOURCE  │ COMMENT │
+# ├───────────┼─────────────────┼─────────┼─────────┼─────────┤
+# │ 10.0.0.12 │ api.example.com │ enabled │ managed │         │
+# └───────────┴─────────────────┴─────────┴─────────┴─────────┘
+# 文件: /etc/hosts | 生效层: default | 托管 1 条，禁用 0 条，TTL 0 条，非托管 0 条
 
 # 临时禁用 10 分钟
 sudo hostscli disable api.example.com --for 10m --reason "临时维护"
 # 已设置 TTL：api.example.com 将在 10m 后自动恢复
 
-# 到期后结算并恢复
+# 10 分钟后结算并恢复
 sudo hostscli ttl tick
 # 已恢复 1 条到期 TTL。
 ```
