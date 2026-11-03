@@ -32,7 +32,9 @@ describe('审计：写入留痕与哈希链', () => {
         write?.summary?.added.some((entry) => entry.hostnames.includes('audit.example.com')),
       ).toBe(true);
 
-      expect((await stat(auditPath)).mode & 0o777).toBe(0o600);
+      if (process.platform !== 'win32') {
+        expect((await stat(auditPath)).mode & 0o777).toBe(0o600);
+      }
       const verification = await verifyAudit(auditPath);
       expect(verification.ok).toBe(true);
       expect(verification.chained).toBeGreaterThan(0);

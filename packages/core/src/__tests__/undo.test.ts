@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { EOL } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { addHosts, listUndoHistory, readHistory, setHostsEnabled, undoHosts } from '../index';
@@ -55,8 +56,7 @@ describe('undo：意图级撤销', () => {
     const env = await makeEnv();
     try {
       await addHosts({ ...env.options(), ip: '10.0.0.13', hostnames: ['undo.example.com'] });
-      const { writeFile } = await import('node:fs/promises');
-      await writeFile(env.hostsPath, `${HOSTS}# manual edit\n`);
+      await writeFile(env.hostsPath, `${HOSTS}# manual edit${EOL}`);
       await expect(undoHosts(env.options())).rejects.toMatchObject({ code: 'CONFLICT' });
     } finally {
       await env.cleanup();

@@ -1,5 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { EOL, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BEGIN_MARKER, END_MARKER } from '../index';
 
@@ -13,7 +13,7 @@ export const HOSTS = [
   '',
   '192.168.1.1 nas.local',
   '',
-].join('\n');
+].join(EOL);
 
 export interface TestEnv {
   directory: string;
