@@ -1,4 +1,15 @@
-import { chmod, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -17,7 +28,8 @@ import {
   profileIdSchema,
   withFileLock,
 } from '../index';
-import { lockDirectory } from '../storage/paths';
+import { lockDirectory, resolveDataPaths } from '../storage/paths';
+import { lockPathForDataDir } from '../system/lock';
 
 describe('时长解析（TTL）', () => {
   it('接受 s/m/h/d 与组合，并强制 1 分钟下限', () => {
@@ -230,6 +242,32 @@ describe('跨进程锁', () => {
     );
     expect(lockPathFor(hostsPath, join(directory, 'data-a'))).not.toBe(
       lockPathFor(join(directory, 'other-hosts'), join(directory, 'data-a')),
+    );
+  });
+
+  it('符号链接别名与路径写法归一化到同一把锁', async () => {
+    if (process.platform === 'win32') return;
+
+    const real = join(directory, 'real');
+    const alias = join(directory, 'alias');
+    await mkdir(real, { recursive: true });
+    await symlink(real, alias, 'dir');
+
+    // macOS 的 /tmp→/private/tmp、Linux 的 /var→/private/var 属于同类别名。
+    expect(lockPathFor(join(alias, 'hosts'))).toBe(lockPathFor(join(real, 'hosts')));
+    expect(lockPathForDataDir(alias)).toBe(lockPathForDataDir(real));
+    expect(lockPathForDataDir(`${real}/`)).toBe(lockPathForDataDir(real));
+  });
+
+  it('profilesDir 必须是数据目录内的相对路径', () => {
+    expect(() => resolveDataPaths({ dataDir: directory, profilesDir: '../escape' })).toThrow(
+      InvalidInputError,
+    );
+    expect(() =>
+      resolveDataPaths({ dataDir: directory, profilesDir: join(directory, 'outside') }),
+    ).toThrow(InvalidInputError);
+    expect(resolveDataPaths({ dataDir: directory, profilesDir: 'profiles/team' }).profilesDir).toBe(
+      join(directory, 'profiles', 'team'),
     );
   });
 

@@ -5,7 +5,7 @@ import type { HostEntry } from '../hosts/models';
 import { atomicWriteFile } from '../system/atomic-write';
 import { flushDns } from '../system/dns-flush';
 import type { Profile } from '../profiles/store';
-import { writeProfile } from '../profiles/store';
+import { profilePath, writeProfile } from '../profiles/store';
 import { saveState } from '../storage/state';
 import { canWriteDirectly, permissionHint } from '../system/privilege';
 import type { Workspace } from './context';
@@ -32,6 +32,49 @@ async function readHostsOrNull(hostsPath: string): Promise<Buffer | null> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
+}
+
+interface ProfileSnapshot {
+  path: string;
+  previous: Buffer | null;
+}
+
+/**
+ * 在写 hosts 之前先记录各方案文件的原始内容。
+ * hosts 与方案/状态不是同一个文件，持久化中途失败时如果只回滚 hosts，
+ * 方案里会留下“命令已报错、但内容已被改”的半成功状态；下一次 apply 会把
+ * 这个未确认的改动真正写进 hosts。这里先快照，失败时一起回滚。
+ */
+async function snapshotProfiles(
+  profiles: Profile[],
+  profilesDir: string,
+): Promise<ProfileSnapshot[]> {
+  const snapshots: ProfileSnapshot[] = [];
+  for (const profile of profiles) {
+    const path = profilePath(profilesDir, profile.id);
+    try {
+      snapshots.push({ path, previous: await readFile(path) });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      snapshots.push({ path, previous: null });
+    }
+  }
+  return snapshots;
+}
+
+async function restoreProfiles(snapshots: ProfileSnapshot[]): Promise<boolean> {
+  const results = await Promise.allSettled(
+    snapshots.map(async ({ path, previous }) => {
+      if (previous === null) {
+        await unlink(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== 'ENOENT') throw error;
+        });
+        return;
+      }
+      await atomicWriteFile(path, previous);
+    }),
+  );
+  return results.every((result) => result.status === 'fulfilled');
 }
 
 /**
@@ -87,6 +130,17 @@ export async function commitPlan(
   const affected = options.affected ?? [];
   let backupPath: string | null = null;
   let dnsFlushResult: MutationResult['dnsFlush'];
+  // 方案快照：plan.changed 时在写 hosts 前赋值，仅写方案时在持久化前赋值。
+  let profileSnapshots: ProfileSnapshot[] | null = null;
+  const stateSnapshot = {
+    lastRender: workspace.state.lastRender,
+    ttlHashes: new Map(
+      workspace.state.ttl.map((record) => [
+        `${record.layerId}\u0000${record.entryId}`,
+        record.planHash,
+      ]),
+    ),
+  };
 
   if (plan.changed) {
     if (workspace.dryRun) {
@@ -106,6 +160,10 @@ export async function commitPlan(
         permissionHint(workspace.hostsPath, workspace.platformId),
       );
     }
+
+    // 快照必须在任何写入（备份、hosts、方案、状态）之前完成，
+    // 这样快照读取失败时不会留下任何已落盘的改动。
+    profileSnapshots = await snapshotProfiles(options.profiles ?? [], workspace.paths.profilesDir);
 
     if (plan.loaded.raw !== null) {
       backupPath = await backupFile(workspace.hostsPath, plan.loaded.raw, {
@@ -150,6 +208,12 @@ export async function commitPlan(
       planHash: null,
       warnings,
     };
+  }
+
+  // 未改 hosts、只写方案（如 profile meta）时，hosts 没有写入风险，
+  // 但也需要在持久化前快照，失败时才能把方案文件恢复原状。
+  if (profileSnapshots === null) {
+    profileSnapshots = await snapshotProfiles(options.profiles ?? [], workspace.paths.profilesDir);
   }
 
   // DNS 刷新的顺序很关键：verify 用 getaddrinfo，必须先让系统缓存失效，
@@ -246,6 +310,17 @@ export async function commitPlan(
       await saveState(workspace.paths.statePath, workspace.state);
     }
   } catch (error) {
+    const restoredProfiles = await restoreProfiles(profileSnapshots ?? []);
+    // 内存中的 lastRender / TTL planHash 只在写入成功后才应生效；
+    // 既然 hosts 即将回滚，这些字段也必须恢复到本次提交前的值。
+    workspace.state.lastRender = stateSnapshot.lastRender;
+    for (const record of workspace.state.ttl) {
+      const previous = stateSnapshot.ttlHashes.get(`${record.layerId}\u0000${record.entryId}`);
+      if (previous !== undefined) record.planHash = previous;
+    }
+    if (!restoredProfiles) {
+      warnings.push('回滚方案文件失败，请检查 profiles 目录权限。');
+    }
     if (plan.changed) {
       const rolledBack = await rollbackHosts(workspace, plan.loaded.raw, plan.next);
       await appendAudit(workspace.paths.auditPath, {

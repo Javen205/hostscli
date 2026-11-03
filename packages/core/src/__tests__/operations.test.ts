@@ -36,6 +36,7 @@ import {
   updateProfileMeta,
   useProfile,
   saveProfileFromCurrent,
+  setStackLayerEnabled,
   cancelTtl,
   currentPlatformId,
   defaultEolFor,
@@ -594,6 +595,29 @@ describe('方案（profile）与切换', () => {
     expect(pruned.entries.some((entry) => entry.hostnames.includes('api.example.com'))).toBe(false);
   });
 
+  it('profile save 拒绝未启用层与多启用层，避免清空自身或灌入其他层条目', async () => {
+    await createProfileFromCurrent({ ...options(), id: 'default', fromCurrent: true });
+    await addHosts({ ...options(), ip: '10.0.0.71', hostnames: ['default-only.example.com'] });
+
+    const dev = await createProfileFromCurrent({ ...options(), id: 'dev', fromCurrent: true });
+    const devPath = join(dataDir, 'profiles', 'dev.json');
+    const devBefore = await readText(devPath);
+    expect(dev.entries.length).toBeGreaterThan(0);
+
+    // 未启用：不得从当前托管区块覆盖它，否则会把自身的启用条目清空。
+    await expect(saveProfileFromCurrent({ ...options(), id: 'dev' })).rejects.toBeInstanceOf(
+      InvalidInputError,
+    );
+    expect(await readText(devPath)).toBe(devBefore);
+
+    // 多启用层：托管区块是全层合并结果，写回 dev 会把 default 的条目灌进来。
+    await setStackLayerEnabled({ ...options(), id: 'dev', enabled: true });
+    await expect(saveProfileFromCurrent({ ...options(), id: 'dev' })).rejects.toBeInstanceOf(
+      InvalidInputError,
+    );
+    expect(await readText(devPath)).toBe(devBefore);
+  });
+
   it('update 元信息会按新优先级重建；active 方案不可删除，非 active 可删除', async () => {
     await createProfileFromCurrent({ ...options(), id: 'default', fromCurrent: true });
     await useProfile({ ...options(), id: 'default' });
@@ -944,12 +968,64 @@ describe('存储与配置健壮性', () => {
     await expect(updateConfig('ttl.tickInterval', '30s', options())).rejects.toBeInstanceOf(
       InvalidInputError,
     );
+    await expect(updateConfig('profilesDir', '../escape', options())).rejects.toBeInstanceOf(
+      InvalidInputError,
+    );
   });
 
   it('config 支持 hostsPath 与 ~ 展开', async () => {
     await updateConfig('hostsPath', '~/custom-hosts', options());
     const shown = await showConfig(options());
     expect(shown.config.hostsPath).toBe(join(directory, 'custom-hosts'));
+  });
+
+  it('拒绝零宽、双向控制与 BOM 等不可见字符', async () => {
+    const invisible = [
+      'exa\u200bmple.com',
+      'exa\u200cmple.com',
+      'exa\u200dmple.com',
+      'exa\u202emple.com',
+      '\ufeffexample.com',
+      'exa\u2060mple.com',
+      'exa\u2028mple.com',
+    ];
+    for (const hostname of invisible) {
+      await expect(
+        addHosts({ ...options(), ip: '10.0.0.1', hostnames: [hostname] }),
+      ).rejects.toBeInstanceOf(InvalidInputError);
+    }
+    await expect(
+      addHosts({
+        ...options(),
+        ip: '10.0.0.1',
+        hostnames: ['ok.example.com'],
+        comment: '含\u200b零宽字符的注释',
+      }),
+    ).rejects.toBeInstanceOf(InvalidInputError);
+    await addHosts({ ...options(), ip: '10.0.0.1', hostnames: ['ok.example.com'] });
+  });
+
+  it('状态写入失败时回滚已写入的方案，不留下半成功', async () => {
+    if (process.platform === 'win32') return;
+
+    await addHosts({ ...options(), ip: '10.0.0.1', hostnames: ['stable.example.com'] });
+    const profilePath = join(dataDir, 'profiles', 'default.json');
+    const beforeHosts = await readText(hostsPath);
+    const beforeProfile = await readText(profilePath);
+
+    // dataDir 只读时，hosts 在目录外仍可写、profiles 子目录仍可写，
+    // 只有 state.json 的临时文件会失败，正好命中“方案已写、状态未写”的窗口。
+    await chmod(dataDir, 0o555);
+    try {
+      await expect(
+        addHosts({ ...options(), ip: '10.0.0.2', hostnames: ['volatile.example.com'] }),
+      ).rejects.toThrow();
+    } finally {
+      await chmod(dataDir, 0o755);
+    }
+
+    expect(await readText(hostsPath)).toBe(beforeHosts);
+    expect(await readText(profilePath)).toBe(beforeProfile);
   });
 
   it('expandHome 在 Windows 语义下只产生反斜杠，且可继续用 path 拼接', () => {

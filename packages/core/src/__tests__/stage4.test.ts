@@ -137,6 +137,36 @@ describe('阶段 4：写入后解析验证', () => {
     expect(failed.failures[0]?.actual).toEqual(['10.9.9.9']);
   });
 
+  it('未压缩 IPv6 与 getaddrinfo 压缩结果等价，不应误判为未生效', async () => {
+    const entries = [
+      {
+        id: 'e1',
+        ip: '2001:0db8:0000:0000:0000:0000:0000:0001',
+        hostnames: ['v6.example.com'],
+        enabled: true,
+        source: 'managed' as const,
+        layerId: 'l1',
+      },
+      {
+        id: 'e2',
+        ip: '2001:DB8::1',
+        hostnames: ['v6-upper.example.com'],
+        enabled: true,
+        source: 'managed' as const,
+        layerId: 'l1',
+      },
+    ];
+
+    const result = await verifyManagedEntries(
+      entries,
+      { maxHostnames: 2, timeoutMs: 100 },
+      { lookup: async () => [{ address: '2001:db8::1', family: 6 }] },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.failures).toHaveLength(0);
+  });
+
   it('验证失败时回滚 hosts、保留围栏外内容并写入 audit', async () => {
     const env = await makeEnv();
     try {

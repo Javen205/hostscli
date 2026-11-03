@@ -1,5 +1,6 @@
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, posix, win32 } from 'node:path';
+import { InvalidInputError } from '../errors';
 
 export interface DataPaths {
   dataDir: string;
@@ -25,11 +26,36 @@ export function resolveDataDir(dataDir?: string, env: NodeJS.ProcessEnv = proces
   return dataDir ?? env.HOSSCLI_HOME ?? join(homedir(), '.hostscli');
 }
 
+/**
+ * profilesDir 来自 config.json，属于不可信输入：必须是数据目录内的相对路径。
+ * 否则 `../../etc` 之类的值会让 profile 写入逃逸到数据目录之外。
+ * 该函数同时用于 `config set` 写入前校验，避免把配置写坏后所有命令都无法启动。
+ */
+export function assertSafeProfilesDir(profilesDir: string): void {
+  const segments = profilesDir.split(/[\\/]+/);
+  const driveRelative = /^[A-Za-z]:/.test(profilesDir);
+  if (
+    profilesDir === '' ||
+    posix.isAbsolute(profilesDir) ||
+    win32.isAbsolute(profilesDir) ||
+    driveRelative ||
+    segments.includes('..')
+  ) {
+    throw new InvalidInputError(
+      `配置项 profilesDir 必须是数据目录内的相对路径（当前：${profilesDir}）。`,
+    );
+  }
+}
+
+function resolveProfilesDir(dataDir: string, profilesDir: string | undefined): string {
+  if (profilesDir === undefined) return join(dataDir, 'profiles');
+  assertSafeProfilesDir(profilesDir);
+  return join(dataDir, profilesDir);
+}
+
 export function resolveDataPaths(options: DataPathOptions = {}): DataPaths {
   const dataDir = resolveDataDir(options.dataDir, options.env ?? process.env);
-  const profilesDir = options.profilesDir
-    ? join(dataDir, options.profilesDir)
-    : join(dataDir, 'profiles');
+  const profilesDir = resolveProfilesDir(dataDir, options.profilesDir);
 
   return {
     dataDir,

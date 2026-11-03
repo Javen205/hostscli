@@ -5,6 +5,7 @@ import { InvalidInputError } from '../errors';
 import { profileIdSchema } from '../profiles/store';
 import { parseDuration } from '../ttl/duration';
 import { readJsonOrDefault, writeJsonFile } from './json';
+import { assertSafeProfilesDir } from './paths';
 
 /**
  * 远程订阅来源（阶段 3 使用）。放在 config 中是因为它是"用户配置"而不是运行态，
@@ -225,6 +226,9 @@ export function setConfigValue(
     }
     if (key === 'defaults.ttlWarnThreshold' || key === 'ttl.tickInterval') {
       parseDuration(rawValue);
+    }
+    if (key === 'profilesDir') {
+      assertSafeProfilesDir(rawValue);
     }
     assign(rawValue === '' ? null : rawValue);
   } else if (ENUM_KEYS[key]) {

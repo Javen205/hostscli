@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { chmod, mkdir, open, readFile, stat, unlink } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { LockedError } from '../errors';
 import { lockDirectory } from '../storage/paths';
 
@@ -18,6 +19,25 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
+ * 路径字符串可能因符号链接别名而不同（macOS 的 /tmp 与 /private/tmp、
+ * Linux 的 /var 与 /private/var）。锁键必须先归一化到真实路径，
+ * 否则同一份 hosts / 同一个数据目录会拿到两把不同的锁。
+ */
+function canonicalPath(value: string): string {
+  const resolved = resolve(value);
+  try {
+    return realpathSync.native(resolved);
+  } catch {
+    // 文件尚不存在时，归一化父目录即可覆盖目录别名。
+  }
+  try {
+    return join(realpathSync.native(dirname(resolved)), basename(resolved));
+  } catch {
+    return resolved;
+  }
+}
+
+/**
  * 由 hosts 路径生成稳定锁名。
  *
  * 锁必须只按 hosts 文件取键：不同数据目录的两个实例写同一份 hosts 时，
@@ -25,7 +45,7 @@ function delay(ms: number): Promise<void> {
  * `dataDir` 参数仅为兼容旧调用保留，不再参与锁名计算。
  */
 export function lockPathFor(hostsPath: string, _dataDir?: string): string {
-  const digest = createHash('sha256').update(resolve(hostsPath)).digest('hex').slice(0, 16);
+  const digest = createHash('sha256').update(canonicalPath(hostsPath)).digest('hex').slice(0, 16);
   return join(lockDirectory(), `${digest}.lock`);
 }
 
@@ -34,7 +54,10 @@ export function lockPathFor(hostsPath: string, _dataDir?: string): string {
  * 避免 profile/state/config 被并发改写。
  */
 export function lockPathForDataDir(dataDir: string): string {
-  const digest = createHash('sha256').update(`data\u0000${dataDir}`).digest('hex').slice(0, 16);
+  const digest = createHash('sha256')
+    .update(`data\u0000${canonicalPath(dataDir)}`)
+    .digest('hex')
+    .slice(0, 16);
   return join(lockDirectory(), `${digest}.lock`);
 }
 

@@ -9,11 +9,12 @@ export interface EntryInput {
 }
 
 /**
- * C0/C1 控制字符、DEL 与 Unicode 行分隔符。
- * hosts 是逐行格式，任何换行/控制字符都会把单条规则拆成多行，必须在校验入口拒绝。
+ * C0/C1 控制字符、DEL、Unicode 行分隔符与不可见格式字符。
+ * hosts 是逐行格式，任何换行/控制字符都会把单条规则拆成多行；
+ * 零宽字符、双向控制符与 BOM 虽然不换行，但会在展示与解析时造成视觉欺骗，
+ * 因此在入口一并拒绝。
  */
-// eslint-disable-next-line no-control-regex -- 这里就是要拦截控制字符
-export const FORBIDDEN_TEXT_PATTERN = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/;
+export const FORBIDDEN_TEXT_PATTERN = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
 
 export function containsForbiddenText(value: string): boolean {
   return FORBIDDEN_TEXT_PATTERN.test(value);
@@ -21,7 +22,9 @@ export function containsForbiddenText(value: string): boolean {
 
 function assertSingleLine(value: string, label: string): void {
   if (containsForbiddenText(value)) {
-    throw new InvalidInputError(`${label}不能包含换行或其他控制字符。`);
+    throw new InvalidInputError(
+      `${label}不能包含换行、控制字符或不可见格式字符（零宽/双向控制等）。`,
+    );
   }
 }
 

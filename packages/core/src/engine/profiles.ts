@@ -142,13 +142,15 @@ export async function saveProfileFromCurrent(options: ProfileSaveOptions): Promi
     }
     profile.entries = [...managedEntries, ...preserved];
 
-    if (!workspace.state.activeLayers.includes(options.id)) {
-      return writeProfile(workspace.paths.profilesDir, profile, { trusted: true });
-    }
-
     const { profiles } = await resolveActiveLayers(workspace, loaded.document, { persist: true });
-    const target = profiles.find((candidate) => candidate.id === options.id);
-    if (!target) throw new InvalidInputError(`当前未启用方案：${options.id}`);
+    if (profiles.length !== 1 || profiles[0]?.id !== options.id) {
+      const active = profiles.map((candidate) => candidate.id).join(', ') || '无';
+      throw new InvalidInputError(
+        `profile save 只能在“仅启用一个层且目标就是该层”时使用；` +
+          `当前启用层：${active}，目标：${options.id}。`,
+      );
+    }
+    const target = profiles[0] as Profile;
     target.entries = profile.entries;
 
     const plan = buildRenderPlan(workspace, loaded, profiles, {
