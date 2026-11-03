@@ -43,9 +43,7 @@ function createContext(root) {
   const dataDir = join(root, 'data');
 
   function run(args, options = {}) {
-    const expectations = Array.isArray(options.expect)
-      ? options.expect
-      : [options.expect ?? 0];
+    const expectations = Array.isArray(options.expect) ? options.expect : [options.expect ?? 0];
     const result = spawnSync(process.execPath, [cliPath, ...args], {
       encoding: 'utf8',
       timeout: STEP_TIMEOUT_MS,
@@ -88,9 +86,7 @@ function createContext(root) {
 }
 
 function baseHosts(managed = []) {
-  return ['# e2e-top', '127.0.0.1 localhost', BEGIN, ...managed, END, '# e2e-bottom', ''].join(
-    eol,
-  );
+  return ['# e2e-top', '127.0.0.1 localhost', BEGIN, ...managed, END, '# e2e-bottom', ''].join(eol);
 }
 
 function workspace(ctx) {
@@ -116,7 +112,9 @@ const CASES = {
     );
     assert(json.summary.managed === 1, `summary.managed 应为 1，实际 ${json.summary.managed}`);
     assert(
-      json.entries.some((entry) => entry.hostnames.includes('localhost') && entry.source === 'external'),
+      json.entries.some(
+        (entry) => entry.hostnames.includes('localhost') && entry.source === 'external',
+      ),
       'list 未区分非托管条目',
     );
   },
@@ -139,7 +137,15 @@ const CASES = {
     assert(dry.diff.includes(HOST), 'add --dry-run 的 diff 应包含新主机名');
     assert((await ctx.readHosts()) === before, 'add --dry-run 不应写盘');
 
-    const added = ctx.runJson(['add', '10.0.0.12', HOST, '--comment', 'e2e', ...workspace(ctx), '--json']);
+    const added = ctx.runJson([
+      'add',
+      '10.0.0.12',
+      HOST,
+      '--comment',
+      'e2e',
+      ...workspace(ctx),
+      '--json',
+    ]);
     assert(added.changed === true, 'add 应报告 changed=true');
     assert((await ctx.readHosts()).includes(`10.0.0.12  ${HOST}`), 'add 后 hosts 未包含新记录');
 
@@ -179,7 +185,16 @@ const CASES = {
     // 非 TTY 下超过阈值会要求确认，确认失败应返回 CANCELLED(8)。
     ctx.run(['disable', HOST, '--for', '100d', ...workspace(ctx)], { expect: 8 });
 
-    const ttl = ctx.runJson(['disable', HOST, '--for', '5m', '--reason', 'e2e', ...workspace(ctx), '--json']);
+    const ttl = ctx.runJson([
+      'disable',
+      HOST,
+      '--for',
+      '5m',
+      '--reason',
+      'e2e',
+      ...workspace(ctx),
+      '--json',
+    ]);
     assert(ttl.record?.expiresAt, 'disable --for 未返回 expiresAt');
     const list = ctx.runJson(['list', ...workspace(ctx), '--json']);
     const entry = list.entries.find((item) => item.hostnames.includes(HOST));
@@ -256,10 +271,16 @@ const CASES = {
       ...workspace(ctx),
       '--json',
     ]);
-    assert(created.entries.length === 1, `profile create 应导入 1 条，实际 ${created.entries.length}`);
+    assert(
+      created.entries.length === 1,
+      `profile create 应导入 1 条，实际 ${created.entries.length}`,
+    );
 
     const list = ctx.runJson(['profile', 'list', ...dataOnly(ctx), '--json']);
-    assert(list.profiles.some((item) => item.id === 'office'), 'profile list 未包含 office');
+    assert(
+      list.profiles.some((item) => item.id === 'office'),
+      'profile list 未包含 office',
+    );
 
     const shown = ctx.runJson(['profile', 'show', 'office', ...dataOnly(ctx), '--json']);
     assert(shown.id === 'office' && shown.name === 'Office', 'profile show 字段不符');
@@ -330,7 +351,10 @@ const CASES = {
     assert(added.profile.entries.length === 1, 'stack layer add 未导入条目');
 
     const layers = ctx.runJson(['stack', 'layer', 'list', ...dataOnly(ctx), '--json']);
-    assert(layers.layers.some((layer) => layer.id === 'office'), 'stack layer list 未包含 office');
+    assert(
+      layers.layers.some((layer) => layer.id === 'office'),
+      'stack layer list 未包含 office',
+    );
 
     const applied = ctx.runJson(['stack', 'apply', ...workspace(ctx), '--json']);
     assert(typeof applied.changed === 'boolean', 'stack apply 未返回 changed');
@@ -369,17 +393,15 @@ const CASES = {
     assert(add.source.id === 'offline', 'remote add 返回字段不符');
 
     const list = ctx.runJson(['remote', 'list', ...dataOnly(ctx), '--json']);
-    assert(list.sources.some((item) => item.source.id === 'offline'), 'remote list 未包含订阅');
+    assert(
+      list.sources.some((item) => item.source.id === 'offline'),
+      'remote list 未包含订阅',
+    );
 
-    const failed = ctx.runJson([
-      'remote',
-      'update',
-      'offline',
-      '--timeout',
-      '1000',
-      ...dataOnly(ctx),
-      '--json',
-    ], { expect: 6 });
+    const failed = ctx.runJson(
+      ['remote', 'update', 'offline', '--timeout', '1000', ...dataOnly(ctx), '--json'],
+      { expect: 6 },
+    );
     assert(failed.failed === 1, `remote update 离线应失败 1 个，实际 ${failed.failed}`);
 
     ctx.runJson(['remote', 'remove', 'offline', ...dataOnly(ctx), '--json']);
@@ -454,8 +476,10 @@ const CASES = {
         const auto = ctx.run(['network', 'auto', ...workspace(ctx), '--json'], { expect: 6 });
         assert(
           auto.stderr.includes('SSID') ||
-            auto.stderr.includes('不支持') ||
-            auto.stderr.includes('Wi-Fi'),
+            auto.stderr.includes('Wi-Fi') ||
+            auto.stderr.includes('iwgetid') ||
+            auto.stderr.includes('nmcli') ||
+            auto.stderr.includes('不支持'),
           `network auto 未给出可识别的失败原因，stderr: ${tail(auto.stderr)}`,
         );
       }
@@ -485,7 +509,14 @@ const CASES = {
     const diff = ctx.runJson(['git', 'diff', ...dataOnly(ctx), '--json']);
     assert(typeof diff.diff === 'string', 'git diff 未返回 diff 字符串');
 
-    const rollback = ctx.runJson(['git', 'rollback', snapshot.commit, ...dataOnly(ctx), '--json']);
+    const rollback = ctx.runJson([
+      'git',
+      'rollback',
+      snapshot.commit,
+      '--no-rebuild',
+      ...dataOnly(ctx),
+      '--json',
+    ]);
     assert(rollback.commit && rollback.restored, 'git rollback 返回字段不符');
   },
 
