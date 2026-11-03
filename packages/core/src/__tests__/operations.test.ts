@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   BEGIN_MARKER,
@@ -37,9 +37,12 @@ import {
   useProfile,
   saveProfileFromCurrent,
   cancelTtl,
+  currentPlatformId,
+  defaultEolFor,
   extendTtl,
   tickTtl,
 } from '../index';
+import { expandHome } from '../storage/config';
 
 function sha256(value: string | Buffer): string {
   return createHash('sha256').update(value).digest('hex');
@@ -359,7 +362,8 @@ describe('CRUD 与非托管区不变量', () => {
 
     const text = await readText(hostsPath);
     expect(text.startsWith(source)).toBe(true);
-    expect(text).toContain(`${source}\n${BEGIN_MARKER}`);
+    const eol = defaultEolFor(currentPlatformId(process.platform));
+    expect(text).toContain(`${source}${eol}${BEGIN_MARKER}`);
   });
 
   it('只读文件返回权限错误且不写入', async () => {
@@ -946,5 +950,44 @@ describe('存储与配置健壮性', () => {
     await updateConfig('hostsPath', '~/custom-hosts', options());
     const shown = await showConfig(options());
     expect(shown.config.hostsPath).toBe(join(directory, 'custom-hosts'));
+  });
+
+  it('expandHome 在 Windows 语义下只产生反斜杠，且可继续用 path 拼接', () => {
+    const home = 'C:\\Users\\runner';
+
+    expect(expandHome('~', {}, { platform: 'win32', home })).toBe(home);
+    expect(expandHome('~/vendor/hosts', {}, { platform: 'win32', home })).toBe(
+      win32.join(home, 'vendor', 'hosts'),
+    );
+
+    // 混用 `/` 与 `\` 的输入也要归一为单一反斜杠。
+    const normalized = expandHome('~\\vendor/hosts\\', {}, { platform: 'win32', home });
+    expect(normalized).toBe(win32.join(home, 'vendor', 'hosts'));
+    expect(normalized.includes('/')).toBe(false);
+    expect(win32.join(normalized, 'state.json')).toBe(`${home}\\vendor\\hosts\\state.json`);
+  });
+
+  it('expandHome 支持 UNC 家目录', () => {
+    const home = '\\\\fileserver\\profiles\\runner';
+    expect(expandHome('~/hosts', {}, { platform: 'win32', home })).toBe(`${home}\\hosts`);
+  });
+
+  it('expandHome 在 POSIX 语义下只展开 ~ 前缀', () => {
+    const home = '/home/runner';
+
+    expect(expandHome('~', {}, { platform: 'linux', home })).toBe(home);
+    expect(expandHome('~/etc/hosts', {}, { platform: 'linux', home })).toBe(
+      '/home/runner/etc/hosts',
+    );
+    expect(expandHome('', {}, { platform: 'linux', home })).toBe('');
+    expect(expandHome('/etc/hosts', {}, { platform: 'linux', home })).toBe('/etc/hosts');
+    // 不支持 ~user 语法；反斜杠在 POSIX 下不是分隔符。
+    expect(expandHome('~runner', {}, { platform: 'linux', home })).toBe('~runner');
+    expect(expandHome('~\\etc\\hosts', {}, { platform: 'linux', home })).toBe('~\\etc\\hosts');
+  });
+
+  it('expandHome 默认从 env 取家目录', () => {
+    expect(expandHome('~/custom-hosts', { HOME: directory })).toBe(join(directory, 'custom-hosts'));
+    expect(expandHome('/var/hosts', { HOME: directory })).toBe('/var/hosts');
   });
 });

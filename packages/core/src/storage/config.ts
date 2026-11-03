@@ -1,3 +1,5 @@
+import { homedir } from 'node:os';
+import { posix, win32 } from 'node:path';
 import { z } from 'zod';
 import { InvalidInputError } from '../errors';
 import { profileIdSchema } from '../profiles/store';
@@ -116,11 +118,37 @@ export async function loadConfig(
   return config;
 }
 
-/** 仅展开开头的 `~`；不做变量替换，避免把路径语义搞复杂。 */
-function expandHome(input: string, env: NodeJS.ProcessEnv): string {
-  if (input === '~') return env.HOME ?? input;
-  if (input.startsWith('~/')) return `${env.HOME ?? ''}${input.slice(1)}`;
-  return input;
+export interface ExpandHomeOptions {
+  /** 路径分隔符语义；默认当前平台，测试可显式模拟。 */
+  platform?: NodeJS.Platform;
+  /** 家目录；默认依次取 env.HOME、env.USERPROFILE、os.homedir()。 */
+  home?: string;
+}
+
+/**
+ * 仅展开开头的 `~`；不做变量替换，避免把路径语义搞复杂。
+ * 用目标平台的 path 实现重新拼接，避免在 Windows 上产生 `\` 与 `/` 混合的路径。
+ */
+export function expandHome(
+  input: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: ExpandHomeOptions = {},
+): string {
+  if (!input.startsWith('~')) return input;
+
+  const platform = options.platform ?? process.platform;
+  const isWindows = platform === 'win32';
+  const next = input[1];
+  // 仅 `~` 自身或紧跟分隔符时才展开；`~foo` 这类用户目录语法不支持，原样返回。
+  if (input.length > 1 && next !== '/' && !(isWindows && next === '\\')) return input;
+
+  const home = options.home ?? env.HOME ?? env.USERPROFILE ?? homedir();
+  const rest = input.slice(1).replace(/^[\\/]+/, '');
+  if (rest === '') return home;
+
+  const segments = rest.split(/[\\/]+/).filter((segment) => segment !== '');
+  const pathImpl = isWindows ? win32 : posix;
+  return pathImpl.join(home, ...segments);
 }
 
 export async function saveConfig(configPath: string, config: HostsCliConfig): Promise<void> {
