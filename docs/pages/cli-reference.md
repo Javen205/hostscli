@@ -88,7 +88,9 @@ $HCLI --version
 | `config` | 配置读写 |
 | `git` | 数据目录快照 |
 | `export` | 导出 config / state / profiles |
-| `audit` | 审计日志 |
+| `audit` | 写入审计：哈希链校验、查询、导出 |
+| `undo` | 撤销最近 N 次成功写入（hosts + state + 相关方案） |
+| `run` | 命令存活期间临时生效的 hosts 条目 |
 | `completion` | shell 补全 |
 
 ## 4. 命令详解
@@ -237,10 +239,13 @@ $HCLI config keys [--json]
 ```text
 defaults.backupKeep            defaults.dnsFlush              defaults.ttlWarnThreshold
 defaults.verifyAfterApply      defaults.verifyMaxHostnames    defaults.verifyTimeoutMs
+defaults.auditKeep             defaults.historyKeep
 hostsPath                      profilesDir                   remote.maxBytes
 remote.timeoutMs               output.color                  output.format
 ttl.tickInterval               ttl.timerMode
 ```
+
+`defaults.auditKeep`（默认 1000，0 表示不轮转）控制 `audit.log` 保留条数；`defaults.historyKeep`（默认 30）控制 undo 历史保留次数。轮转会从最旧记录开始删除，链头相应前移，`audit verify` 会如实报告当前链覆盖范围。
 
 布尔值只接受 `true/false`；数字只接受非负整数；时长键会先按 TTL 语法校验。
 
@@ -257,15 +262,58 @@ $HCLI git rollback <rev> [--no-rebuild]
 
 仓库位于数据目录内，不触碰系统 hosts。`rollback` 默认重建 hosts；`--no-rebuild` 只恢复数据目录。回滚前若有未快照变更，会先自动提交保护快照。
 
-### 4.15 `export` / `audit` / `completion`
+### 4.15 `export` / `completion`
 
 ```bash
 $HCLI export [--format json|yaml] [--out <file>]
-$HCLI audit list [--limit <n>] [--json]
 $HCLI completion bash|zsh|fish
 ```
 
-`export` 不包含 `audit.log`、`cache/`、`backups/`。`audit list` 跳过损坏行，默认 20 条。
+`export` 不包含 `audit.log`、`history/`、`cache/`、`backups/`。
+
+### 4.16 `audit`
+
+```bash
+$HCLI audit list [--limit <n>] [--since <time>] [--until <time>]
+                [--command <name>] [--result ok|failed] [--json]
+$HCLI audit show <id> [--json]
+$HCLI audit verify [--json]
+$HCLI audit export [--format json|ndjson]
+```
+
+- 所有成功写入都会记录 `write-ok`，字段包含时间、命令与参数、操作者（uid 与可得的用户名）、目标 hostsPath、变更前后内容哈希、条目级摘要（新增 / 删除 / 禁用 / 恢复）；验证与回滚事件同样入账。
+- 每条新记录带 `id` / `seq` / `prevHash` / `recordHash`，`audit verify` 据此发现内容被改、记录被删或尾部被截断。旧格式记录仍可读取，但标记为"不在链上"，不做完整性保证。
+- `--since` / `--until` 接受 ISO 8601 或任何 `Date.parse` 可识别的时间；`since > until` 报 `INVALID_INPUT`。
+- `audit export` 只写 stdout，不落盘；`ndjson` 每行一条，便于管道处理。
+- `--keep` 轮转由 `defaults.auditKeep` 控制，文件权限 0600、落盘原子。
+- 审计写入失败不会阻断主操作：该次操作会被记入 `audit-unaudited.jsonl`，`audit verify` 与 `audit list` 会显示"有操作未被审计"。
+
+### 4.17 `undo`
+
+```bash
+$HCLI undo [--steps <n>] [--dry-run] [--json] [--verify]
+          [--file <path>] [--data-dir <path>] [--skip-dns-flush]
+```
+
+- 撤销最近 `--steps`（1–100，默认 1）次成功写入，按从新到旧逆序回放，一次性恢复 hosts 托管区、state 与相关方案文件；三处使用写入前的原始字节快照，不是重新渲染。
+- 每次撤销本身也会产生一条可再撤销的历史记录，因此连续执行 `undo` 可在两个状态间来回切换。
+- 若当前 hosts / state / 方案已被其他操作改写，撤销会以 `CONFLICT` 拒绝，不覆盖他人修改；`--dry-run` 只输出将发生的 diff。
+- 没有可撤销记录时返回 `ENTRY_NOT_FOUND`；`--steps` 超过可用记录数返回 `INVALID_INPUT`。
+- 复用 `dataDir/history/<id>/` 快照与 `dataDir/history/journal.jsonl` 日志，保留次数由 `defaults.historyKeep` 控制（默认 30）。
+
+### 4.18 `run`
+
+```bash
+$HCLI run --host <hostname> --ip <addr> [--] <command...>
+$HCLI run list [--json]
+$HCLI run gc [--dry-run] [--json]
+```
+
+- 命令存活期间，临时条目以最高优先级生效；子进程正常退出、异常退出或被 SIGINT / SIGTERM / SIGHUP 中止后自动移除条目并清理会话方案。
+- 命令不存在或启动失败时不会写入临时条目。
+- 会话以 `session-<hex>` 命名并写入 `state.sessions` 租约，父进程被强杀时可执行 `run list` 查看、`run gc` 回收。
+- 多个 `run` 可并存；清理只影响对应会话，不会覆盖其他命令在此期间对托管区的改写。
+- `run` 与 `undo` / 普通写入共用同一把工作区锁与 `--verify` 语义；`run list` / `run gc` 也需要传入与启动时相同的 `--file` / `--data-dir`。
 
 ## 5. 退出码
 

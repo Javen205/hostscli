@@ -17,7 +17,8 @@
 ┌───────────────────────────▼──────────────────────────────────┐
 │ packages/core                                                │
 │  engine/*           用例编排：CRUD / 方案 / 栈 / TTL / 备份 /   │
-│                     网络 / git / 导出 / 审计 / 验证            │
+│                     网络 / git / 导出 / 审计 / 撤销 / run /   │
+│                     验证                                          │
 │  operations.ts      对 CLI 暴露的高层操作汇总（根入口）         │
 │  hosts/*            无损解析、模型、渲染（纯函数，无 I/O）      │
 │  stack/merge.ts     规则合并、优先级、冲突裁决                  │
@@ -71,8 +72,11 @@ commitPlan
    5. 刷新 DNS（可选，配置 dnsFlush）
    6. --verify：getaddrinfo 抽查，失败回滚 hosts + 再刷 DNS + 写 audit
    7. 持久化 profile / state；任何失败回滚 hosts
-   8. 写 audit（verify-ok / verify-rollback / write-rollback）
+   8. 写 audit（write-ok / verify-ok / verify-rollback / write-rollback）
+   9. 写历史快照（engine/history.ts）供 undo 回放
 ```
+
+写入成功记录 `write-ok` 只在"写入 + 回读 + 可选验证 + 持久化"全部成功之后追加，避免把已回滚的操作标成成功。审计或历史写入失败只产生 warning 与未审计标记，不阻断主操作。
 
 正常只读路径（`doctor`、`stack explain`）不进入 `commitPlan`，不写任何文件。`list` 正常读取也不写；但若存在已到期 TTL，会经 `prepare → reconcileTtls` 惰性结算并写回 hosts、备份与 state，因此不能声称严格只读。
 
@@ -88,6 +92,9 @@ commitPlan
 4. **原子替换**：同目录临时文件 + fsync + rename（+ 目录 fsync）；失败清理临时文件。Windows 对 `EBUSY/EPERM/EACCES` 重试 3 次。
 5. **回滚语义**：写后校验失败、验证失败、profile / state 持久化失败，都回滚到写入前字节；但若磁盘内容已被其他进程改写，则跳过回滚并 warning/audit，避免覆盖他人改动。
 6. **围栏唯一性**：起止围栏各恰好一次，否则 `HOSTS_FORMAT`。
+7. **撤销可复现**：`dataDir/history/<id>/` 保存写入前的 hosts / state / 相关 profile 原始字节与 manifest，undo 直接按字节回放；回放前必须校验最新记录的"写入后"指纹与当前磁盘一致，不一致以 `CONFLICT` 拒绝。undo 自身也写入一条可再撤销的历史记录。
+8. **审计链自洽**：新记录以 `recordHash = sha256(JSON.stringify(base))` 串联，`base` 为记录去掉 `recordHash/onChain/legacy`；`audit.log.chain.json` 保存 `seq / lastHash / baseHash`，用于发现尾部截断。旧格式记录保持只读并标记"不在链上"，不伪造完整性。
+9. **run 租约**：`run` 以最高优先级创建临时方案层与 `state.sessions` 租约，子进程存活期间不持锁；退出或 `run gc` 时在同一写路径清理，父进程被强杀时由 pid 存活性判定回收。
 
 这些不变量由 `packages/core` 的解析、引擎、操作与 CLI 集成测试覆盖，包括权限位、原子写、并发写入、TTL 结算与回滚路径。
 
@@ -122,12 +129,15 @@ commitPlan
 
 ```text
 config.json          配置（0600）
-state.json           运行态：activeLayers / initialized / ttl / lastRender（0600）
+state.json           运行态：activeLayers / initialized / ttl / lastRender / sessions（0600）
 profiles/<id>.json   方案（规则集），紧凑 JSON
+history/             写入历史：journal.jsonl + <id>/ 原始字节快照（0700/0600）
 backups/             hosts 备份，按 backupKeep 清理
 cache/remote/        远程订阅内容与 ETag
 audit.log            JSONL 审计（0600）
-.git/                可选，git 快照仓库（不包含 cache/backups）
+audit.log.chain.json 审计链状态：seq / lastHash / baseHash（0600）
+audit-unaudited.jsonl 审计写入失败的补记标记（0600）
+.git/                可选，git 快照仓库（不包含 cache/backups/history/审计链）
 ```
 
-跨进程锁放在系统临时目录 `hostscli-locks/`，避免系统 hosts 不可写时无法加锁。
+跨进程锁放在系统临时目录 `hostscli-locks/`，避免系统 hosts 不可写时无法加锁。工作区锁按排序同时获取 `lockPathFor(hostsPath)` 与 `lockPathForDataDir(dataDir)`，覆盖"读 - 改 - 写 - 校验 - 持久化"全过程；配置文件在锁外加载，避免锁内再取锁。
