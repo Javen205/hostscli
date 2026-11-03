@@ -103,7 +103,7 @@ hostscli/
 
 | 层级 | 名称 | 是否发布 |
 | --- | --- | --- |
-| npm 包 | `hostscli` | 是（当前版本尚未正式发布到 npm） |
+| npm 包 | `hostscli` | 是 |
 | CLI 命令 | `hostscli` | — |
 | 内部库 | `@hostscli/core` | 否，构建时内联进 CLI |
 | 仓库包目录 | `packages/cli` / `packages/core` | — |

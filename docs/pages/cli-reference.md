@@ -5,7 +5,7 @@
 
 ## 1. 安装与调用
 
-本地构建后有三种等价调用方式：
+安装或构建后，有三种等价调用方式：
 
 ```bash
 # 1) 直接调用构建产物
@@ -14,8 +14,8 @@ node packages/cli/dist/index.js --version
 # 2) workspace 内链接（pnpm link --global 后）
 pnpm --filter hostscli exec hostscli --version
 
-# 3) 发布后（当前版本尚未发布到 npm）
-npx hostscli --version
+# 3) 通过 npm 全局安装后
+hostscli --version
 ```
 
 下文示例统一用 `HCLI` 代指调用入口：

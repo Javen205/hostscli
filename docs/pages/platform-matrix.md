@@ -23,7 +23,7 @@
 | UTF-16 自动转换 | 不支持（抛出 `UNSUPPORTED_ENCODING`，exit 7） | 同左 | 同左 |
 | DNS 缓存刷新 | `dscacheutil -flushcache` + `killall -HUP mDNSResponder`（命令选择已验证；未在真实系统执行 flush） | `resolvectl flush-caches` → `systemd-resolve --flush-caches` → `nscd -i hosts`（仅单测；容器无 systemd） | `ipconfig /flushdns`（命令选择已验证，真实刷新未验证） |
 | DNS 服务器读取（doctor） | `scutil --dns`（未验证） | `/etc/resolv.conf` → `resolvectl status`（未验证） | PowerShell `Get-DnsClientServerAddress`（未验证） |
-| Wi-Fi SSID 识别 | `networksetup -getairportnetwork <device>`（未验证） | `iwgetid` → `nmcli`（未验证） | **不支持**（返回 `unsupported`，不写配置） |
+| Wi-Fi SSID 识别 | `networksetup -getairportnetwork <device>`（未验证） | `iwgetid` → `nmcli`（未验证） | **不支持**（返回 `unsupported`；`network auto` 以 `NETWORK` 错误退出（6），不写配置、不做切换） |
 | 解析验证（`--verify`） | `getaddrinfo`（已验证，测试注入 lookup） | 已验证（测试注入 lookup，未真实联网） | CI 已验证（测试注入 lookup） |
 | 跨进程锁 | 系统临时目录 `hostscli-locks/`（已验证） | 已验证 | CI 已验证 |
 | Git 快照 | 调用外部 `git`（已验证） | 已验证（镜像内 git） | CI 已验证（runner 自带 git） |

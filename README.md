@@ -80,7 +80,7 @@ sudo hostscli network map "Office Wi-Fi" --layers office
 sudo hostscli network auto --apply
 ```
 
-Windows 不支持 SSID 识别，`network auto` 会明确报错。
+Windows 不支持 SSID 识别；`network auto` 以 `NETWORK` 错误退出（退出码 6），不写入配置、不做切换。
 
 ### 备份、快照与导出
 
