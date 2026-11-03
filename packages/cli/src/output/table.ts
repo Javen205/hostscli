@@ -15,44 +15,72 @@ function entryStatus(entry: HostEntry): string {
   return entry.enabled ? pc.green('enabled') : pc.yellow('disabled');
 }
 
-export function renderEntryTable(entries: HostEntry[]): string {
-  if (entries.length === 0) return '（没有可显示的 hosts 条目）';
+// 用于计算去色后的可见宽度，这里必须匹配 ESC 控制字符本身。
+// eslint-disable-next-line no-control-regex
+const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+/**
+ * cli-table3 在行数很大时（2k 行约数秒，20k 行超过一分钟）会退化成 O(n²)。
+ * 超过阈值后改用一次扫描算列宽的纯文本表格，保证大 hosts 文件也能秒级列出。
+ */
+const SIMPLE_TABLE_THRESHOLD = 500;
+
+function visibleLength(text: string): number {
+  return text.replace(ANSI_PATTERN, '').length;
+}
+
+function renderPlainTable(head: string[], rows: string[][]): string {
+  const widths = head.map((title, index) => {
+    let width = visibleLength(title);
+    for (const row of rows) {
+      width = Math.max(width, visibleLength(row[index] ?? ''));
+    }
+    return width;
+  });
+
+  const formatRow = (cells: string[]): string =>
+    cells
+      .map((cell, index) => cell + ' '.repeat(Math.max(0, widths[index]! - visibleLength(cell))))
+      .join('  ')
+      .trimEnd();
+
+  return [formatRow(head), ...rows.map(formatRow)].join('\n');
+}
+
+function renderTable(head: string[], rows: string[][]): string {
+  if (rows.length > SIMPLE_TABLE_THRESHOLD) return renderPlainTable(head, rows);
 
   const table = new Table({
-    head: ['IP', 'HOSTNAMES', 'STATUS', 'SOURCE', 'COMMENT'],
+    head,
     style: { head: [], border: [] },
     wordWrap: false,
   });
-
-  for (const entry of entries) {
-    table.push([
-      entry.ip,
-      entry.hostnames.join(', '),
-      entryStatus(entry),
-      entry.source,
-      entry.comment ?? '',
-    ]);
-  }
-
+  for (const row of rows) table.push(row);
   return table.toString();
+}
+
+export function renderEntryTable(entries: HostEntry[]): string {
+  if (entries.length === 0) return '（没有可显示的 hosts 条目）';
+
+  const rows = entries.map((entry) => [
+    entry.ip,
+    entry.hostnames.join(', '),
+    entryStatus(entry),
+    entry.source,
+    entry.comment ?? '',
+  ]);
+  return renderTable(['IP', 'HOSTNAMES', 'STATUS', 'SOURCE', 'COMMENT'], rows);
 }
 
 export function renderTtlTable(views: TtlView[]): string {
   if (views.length === 0) return '（没有 TTL 记录）';
 
-  const table = new Table({
-    head: ['DOMAIN', 'IP', 'REMAINING', 'STATUS', 'REASON'],
-    style: { head: [], border: [] },
-    wordWrap: false,
-  });
-
-  for (const view of views) {
+  const rows = views.map((view) => {
     const status = view.record.paused
       ? 'paused'
       : view.record.status === 'pending'
         ? `pending(${view.record.pendingReason ?? 'write-failed'})`
         : 'active';
-    table.push([
+    return [
       view.hostnames.join(', '),
       view.ip ?? '-',
       view.record.paused
@@ -60,32 +88,22 @@ export function renderTtlTable(views: TtlView[]): string {
         : formatRemaining(view.remainingMs),
       status,
       view.record.reason ?? '',
-    ]);
-  }
-
-  return table.toString();
+    ];
+  });
+  return renderTable(['DOMAIN', 'IP', 'REMAINING', 'STATUS', 'REASON'], rows);
 }
 
 export function renderProfileTable(views: ProfileView[]): string {
   if (views.length === 0) return '（没有方案，可用 hostscli profile create 创建）';
 
-  const table = new Table({
-    head: ['ID', 'NAME', 'PRIORITY', 'ENTRIES', 'ACTIVE'],
-    style: { head: [], border: [] },
-    wordWrap: false,
-  });
-
-  for (const view of views) {
-    table.push([
-      view.profile.id,
-      view.profile.name,
-      String(view.profile.priority),
-      String(view.entryCount),
-      view.active ? pc.green('yes') : '',
-    ]);
-  }
-
-  return table.toString();
+  const rows = views.map((view) => [
+    view.profile.id,
+    view.profile.name,
+    String(view.profile.priority),
+    String(view.entryCount),
+    view.active ? pc.green('yes') : '',
+  ]);
+  return renderTable(['ID', 'NAME', 'PRIORITY', 'ENTRIES', 'ACTIVE'], rows);
 }
 
 export function renderStackLayerTable(views: StackLayerView[]): string {
@@ -93,25 +111,16 @@ export function renderStackLayerTable(views: StackLayerView[]): string {
     return '（没有规则层，可用 hostscli stack layer add <id> --file <path> 添加）';
   }
 
-  const table = new Table({
-    head: ['ID', 'NAME', 'PRIORITY', 'ENTRIES', 'DISABLED', 'TTL', 'ACTIVE'],
-    style: { head: [], border: [] },
-    wordWrap: false,
-  });
-
-  for (const view of views) {
-    table.push([
-      view.profile.id,
-      view.profile.name,
-      String(view.profile.priority),
-      String(view.entryCount),
-      String(view.disabledCount),
-      String(view.ttlCount),
-      view.active ? pc.green('yes') : pc.dim('no'),
-    ]);
-  }
-
-  return table.toString();
+  const rows = views.map((view) => [
+    view.profile.id,
+    view.profile.name,
+    String(view.profile.priority),
+    String(view.entryCount),
+    String(view.disabledCount),
+    String(view.ttlCount),
+    view.active ? pc.green('yes') : pc.dim('no'),
+  ]);
+  return renderTable(['ID', 'NAME', 'PRIORITY', 'ENTRIES', 'DISABLED', 'TTL', 'ACTIVE'], rows);
 }
 
 const VERDICT_COLOR: Record<DoctorVerdict, (value: string) => string> = {

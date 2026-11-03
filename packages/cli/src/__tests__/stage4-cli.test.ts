@@ -4,6 +4,7 @@ import { completionScript } from '../commands/completion';
 import { parseNameOption, parsePriorityOption } from '../commands/common';
 import { serializeSnapshot } from '../commands/export';
 import { exitCodeFor } from '../errors';
+import { renderEntryTable } from '../output/table';
 
 const snapshot = {
   schemaVersion: 1 as const,
@@ -87,5 +88,27 @@ describe('阶段 4：CLI 导出格式与补全脚本', () => {
     expect(exitCodeFor({ code: 'DUPLICATE_ENTRY' })).toBe(2);
     expect(exitCodeFor({ code: 'INVALID_INPUT' })).toBe(2);
     expect(exitCodeFor({ code: 'STORAGE_CORRUPT' })).toBe(7);
+  });
+
+  it('大表渲染保持秒级完成且列对齐（cli-table3 会退化为 O(n²)）', () => {
+    const esc = String.fromCharCode(27);
+    const stripAnsi = (text: string): string =>
+      text.replace(new RegExp(`${esc}\\[[0-9;]*m`, 'g'), '');
+
+    const entries = Array.from({ length: 3000 }, (_, index) => ({
+      id: `layer:${index}`,
+      ip: `10.0.${Math.floor(index / 256)}.${index % 256}`,
+      hostnames: [`host${index}.example.com`],
+      enabled: true,
+      layerId: 'layer',
+      source: 'external' as const,
+    }));
+
+    const output = renderEntryTable(entries);
+    const lines = stripAnsi(output).split('\n');
+    expect(lines).toHaveLength(3001);
+    const columnStart = (line: string, text: string): number => line.indexOf(text);
+    expect(columnStart(lines[0]!, 'HOSTNAMES')).toBe(columnStart(lines[1]!, 'host0.example.com'));
+    expect(columnStart(lines[0]!, 'STATUS')).toBe(columnStart(lines[3000]!, 'enabled'));
   });
 });
