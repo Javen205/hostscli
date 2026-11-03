@@ -16,8 +16,10 @@
     "typecheck": "pnpm -r run typecheck",
     "verify": "node scripts/verify.mjs",
     "verify:fast": "node scripts/verify.mjs --skip-install",
-    "bench": "node scripts/bench.mjs",
-    "bench:write": "node scripts/bench-write.mjs",
+    "bench": "node scripts/bench.mjs parse",
+    "bench:write": "node scripts/bench.mjs write",
+    "bench:stack": "node scripts/bench.mjs stack",
+    "bench:stage4": "node scripts/bench.mjs stage4",
     "changeset": "changeset",
     "version-packages": "changeset version && pnpm install --lockfile-only",
     "release": "pnpm -r publish --access public"

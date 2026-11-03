@@ -114,6 +114,7 @@ pnpm install
 | `pnpm typecheck`    | TypeScript 类型检查（两个包）                                      |
 | `pnpm format:check` | Prettier 格式检查；需要自动修复时用 `pnpm format`                  |
 | `pnpm verify`       | 单一验证入口：build、typecheck、lint、test、格式、冒烟与命令级 e2e |
+| `pnpm bench`        | 性能基准：`parse` / `write` / `stack` / `stage4` 四个子命令        |
 
 目录结构：
 
