@@ -1,0 +1,37 @@
+{
+  "name": "hostscli",
+  "version": "0.0.0",
+  "description": "跨平台 hosts 管理 CLI：无损解析、可控的托管区块、细粒度规则管理",
+  "type": "module",
+  "bin": {
+    "hostscli": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "hosts",
+    "hosts-file",
+    "etc-hosts",
+    "dns",
+    "switch-hosts",
+    "cli"
+  ],
+  "scripts": {
+    "build": "tsup && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "cli-table3": "^0.6.5",
+    "commander": "^15.0.0",
+    "picocolors": "^1.1.1",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@hostscli/core": "workspace:^"
+  }
+}
