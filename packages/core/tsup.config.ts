@@ -14,6 +14,7 @@ export default defineConfig({
     git: 'src/engine/git.ts',
     export: 'src/engine/export.ts',
     audit: 'src/engine/audit.ts',
+    undo: 'src/engine/undo.ts',
     remote: 'src/remote/service.ts',
     doctor: 'src/diagnostics/doctor.ts',
     system: 'src/entries/system.ts',

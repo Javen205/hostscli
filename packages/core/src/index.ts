@@ -114,6 +114,8 @@ export {
   auditHealth,
   readAuditFailures,
   currentOperator,
+  undoHosts,
+  listUndoHistory,
   readHistory,
   verifyManagedEntries,
 } from './operations';
@@ -170,6 +172,9 @@ export type {
   AuditRecord,
   AuditVerifyResult,
   AuditUnauditedRecord,
+  UndoOptions,
+  UndoResult,
+  UndoRecordView,
   ChangeEntry,
   ChangeSummary,
   HistoryFingerprint,

@@ -118,6 +118,11 @@ export const COMMAND_ENTRIES: CommandEntry[] = [
     register: async (program) => (await import('./commands/audit')).registerAuditCommand(program),
   },
   {
+    name: 'undo',
+    description: '撤销最近 N 次成功写入（hosts + state + 相关方案）',
+    register: async (program) => (await import('./commands/undo')).registerUndoCommand(program),
+  },
+  {
     name: 'completion',
     description: '输出 shell 补全脚本（bash / zsh / fish）',
     register: async (program) =>

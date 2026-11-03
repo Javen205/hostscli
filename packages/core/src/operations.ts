@@ -95,6 +95,8 @@ export type {
   AuditVerifyResult,
   AuditUnauditedRecord,
 } from './engine/audit';
+export { undoHosts, listUndoHistory } from './engine/undo';
+export type { UndoOptions, UndoResult, UndoRecordView } from './engine/undo';
 export type {
   ChangeEntry,
   ChangeSummary,
