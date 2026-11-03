@@ -52,6 +52,18 @@ async function main(): Promise<void> {
     writeErr: (text) => process.stderr.write(text),
   });
 
+  // 审计/undo 历史需要知道实际命令；在 preAction 统一注入，避免每个子命令重复传参。
+  program.hook('preAction', (_thisCommand, actionCommand) => {
+    const names: string[] = [];
+    let cursor: Command | null = actionCommand;
+    while (cursor !== null && cursor.parent !== null) {
+      names.unshift(cursor.name());
+      cursor = cursor.parent;
+    }
+    process.env.HOSTSCLI_COMMAND = names.join(' ') || actionCommand.name();
+    process.env.HOSTSCLI_COMMAND_ARGS = JSON.stringify(process.argv.slice(2));
+  });
+
   program.action(() => {
     program.help();
   });

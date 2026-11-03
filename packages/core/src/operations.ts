@@ -74,8 +74,35 @@ export type {
 } from './engine/git';
 export { exportSnapshot, snapshotToJson } from './engine/export';
 export type { ExportSnapshot } from './engine/export';
-export { appendAudit, readAudit } from './engine/audit';
-export type { AuditAction, AuditEntry, AuditFailure } from './engine/audit';
+export {
+  appendAudit,
+  readAudit,
+  queryAudit,
+  verifyAudit,
+  showAudit,
+  exportAudit,
+  auditHealth,
+  readAuditFailures,
+  currentOperator,
+} from './engine/audit';
+export type {
+  AuditAction,
+  AuditEntry,
+  AuditFailure,
+  AuditQuery,
+  AuditQueryResult,
+  AuditRecord,
+  AuditVerifyResult,
+  AuditUnauditedRecord,
+} from './engine/audit';
+export type {
+  ChangeEntry,
+  ChangeSummary,
+  HistoryFingerprint,
+  HistoryRecord,
+  HistorySnapshot,
+} from './engine/history';
+export { readHistory } from './engine/history';
 export { verifyManagedEntries } from './engine/verify';
 export type { VerifyOptions, VerifyResult, VerifyFailure } from './engine/verify';
 export type {

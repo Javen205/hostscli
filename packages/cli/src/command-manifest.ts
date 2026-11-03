@@ -114,7 +114,7 @@ export const COMMAND_ENTRIES: CommandEntry[] = [
   },
   {
     name: 'audit',
-    description: '写入后验证 / 回滚审计日志（JSONL）',
+    description: '写入审计：哈希链校验、查询、导出',
     register: async (program) => (await import('./commands/audit')).registerAuditCommand(program),
   },
   {

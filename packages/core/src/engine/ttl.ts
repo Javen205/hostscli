@@ -132,7 +132,7 @@ export async function reconcileTtls(
 
   if (due.length === 0) {
     if (stateChanged && !workspace.dryRun) {
-      await saveState(workspace.paths.statePath, workspace.state);
+      await commitStateOnly(workspace, 'ttl reconcile');
     }
     return { changed: stateChanged, restored, warnings };
   }
@@ -153,7 +153,10 @@ export async function reconcileTtls(
   });
 
   try {
-    const result = await commitPlan(workspace, plan, { persistState: true });
+    const result = await commitPlan(workspace, plan, {
+      persistState: true,
+      command: 'ttl tick',
+    });
     for (const record of due) {
       restored.push({ hostname: record.hostname, layerId: record.layerId });
     }
@@ -239,6 +242,17 @@ async function findRecordOrThrow(
   return targets[0] as Target;
 }
 
+/**
+ * 只改 state 的 TTL 操作也走统一提交，以便留下审计与 undo 历史；
+ * 渲染结果与当前 hosts 一致时不会触碰 hosts 文件。
+ */
+async function commitStateOnly(workspace: Workspace, command: string): Promise<void> {
+  const loaded = await loadHostsDocument(workspace, false);
+  const { profiles } = await resolveActiveLayers(workspace, loaded.document, { persist: false });
+  const plan = buildRenderPlan(workspace, loaded, profiles);
+  await commitPlan(workspace, plan, { command, persistState: true });
+}
+
 async function pauseTtlInWorkspace(
   workspace: Workspace,
   hostname: string,
@@ -251,7 +265,7 @@ async function pauseTtlInWorkspace(
     Date.parse(target.record.expiresAt) - workspace.now.getTime(),
   );
   target.record.paused = true;
-  await saveState(workspace.paths.statePath, workspace.state);
+  await commitStateOnly(workspace, 'ttl pause');
   return target.record;
 }
 
@@ -268,7 +282,7 @@ async function resumeTtlInWorkspace(
   delete target.record.remainingMs;
   target.record.status = 'active';
   delete target.record.pendingReason;
-  await saveState(workspace.paths.statePath, workspace.state);
+  await commitStateOnly(workspace, 'ttl resume');
   return target.record;
 }
 
@@ -287,7 +301,7 @@ async function extendTtlInWorkspace(
   }
   target.record.status = 'active';
   delete target.record.pendingReason;
-  await saveState(workspace.paths.statePath, workspace.state);
+  await commitStateOnly(workspace, 'ttl extend');
   return target.record;
 }
 

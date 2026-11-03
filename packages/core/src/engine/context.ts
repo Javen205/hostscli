@@ -41,6 +41,11 @@ export interface Workspace {
   paths: DataPaths;
   config: HostsCliConfig;
   state: HostsCliState;
+  /**
+   * 本次事务开始（任何调用方改动之前）的 state 深拷贝。
+   * undo 历史需要用它与写入后的 state 计算条目级变更摘要。
+   */
+  initialState: HostsCliState;
   hostsPath: string;
   platformId: PlatformId;
 }
@@ -74,6 +79,7 @@ export async function openWorkspace(options: WorkspaceOptions = {}): Promise<Wor
     config,
     // 真实状态在拿到锁之后再读取，避免两个实例读到同一份旧状态。
     state: defaultState(),
+    initialState: defaultState(),
     hostsPath,
     platformId,
   };
@@ -93,6 +99,7 @@ export async function withWorkspace<T>(
   return withFileLock(locks[0] as string, async () =>
     withFileLock(locks[1] as string, async () => {
       workspace.state = await loadState(workspace.paths.statePath);
+      workspace.initialState = structuredClone(workspace.state);
       return action(workspace);
     }),
   );

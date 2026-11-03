@@ -34,6 +34,10 @@ const defaultsSchema = z
     verifyAfterApply: z.boolean().default(false),
     verifyMaxHostnames: z.number().int().min(1).max(100).default(8),
     verifyTimeoutMs: z.number().int().min(200).max(30_000).default(2000),
+    /** 审计日志保留条数；0 表示不轮转。 */
+    auditKeep: z.number().int().min(0).max(10_000).default(1000),
+    /** undo 历史保留条数（含每条的快照）。 */
+    historyKeep: z.number().int().min(1).max(500).default(30),
   })
   .default(() => ({
     dnsFlush: true,
@@ -42,6 +46,8 @@ const defaultsSchema = z
     verifyAfterApply: false,
     verifyMaxHostnames: 8,
     verifyTimeoutMs: 2000,
+    auditKeep: 1000,
+    historyKeep: 30,
   }));
 
 const ttlConfigSchema = z
@@ -161,6 +167,8 @@ const NUMBER_KEYS = new Set([
   'defaults.backupKeep',
   'defaults.verifyMaxHostnames',
   'defaults.verifyTimeoutMs',
+  'defaults.auditKeep',
+  'defaults.historyKeep',
   'remote.timeoutMs',
   'remote.maxBytes',
 ]);

@@ -208,8 +208,11 @@ describe('阶段 4：写入后解析验证', () => {
       expect(text).toContain('192.168.1.1 nas.local');
 
       const audit = await readAudit(join(env.dataDir, 'audit.log'), 10);
-      expect(audit.at(-1)?.action).toBe('verify-ok');
-      expect(audit.at(-1)?.checked).toBe(1);
+      const verified = audit.find((entry) => entry.action === 'verify-ok');
+      expect(verified?.ok).toBe(true);
+      expect(verified?.checked).toBe(1);
+      // 成功写入的审计记录排在验证之后，避免把已回滚的操作标成成功。
+      expect(audit.some((entry) => entry.action === 'write-ok')).toBe(true);
     } finally {
       await env.cleanup();
     }
@@ -496,7 +499,17 @@ describe('阶段 4：数据导出', () => {
       const text = snapshotToJson(snapshot);
       expect(text.endsWith('\n')).toBe(true);
       expect(JSON.parse(text)).toMatchObject({ schemaVersion: 1, hostsPath: env.hostsPath });
-      expect(text).not.toContain('audit');
+      // 快照只包含可迁移内容；audit / backups 等运行态目录不得出现在导出里。
+      expect(Object.keys(snapshot).sort()).toEqual([
+        'config',
+        'exportedAt',
+        'hostsPath',
+        'platform',
+        'profiles',
+        'schemaVersion',
+        'state',
+      ]);
+      expect(text).not.toContain('audit.log');
       expect(text).not.toContain('backups');
     } finally {
       await env.cleanup();

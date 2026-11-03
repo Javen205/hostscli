@@ -142,7 +142,14 @@ async function ensureRepo(options: GitOptions): Promise<void> {
   // audit / cache / backups 体积大或含运行态，不进入快照。
   await writeFile(
     join(gitDir, 'info', 'exclude'),
-    ['audit.log', 'cache/', 'backups/'].join('\n') + '\n',
+    [
+      'audit.log',
+      'audit.log.chain.json',
+      'audit-unaudited.jsonl',
+      'cache/',
+      'backups/',
+      'history/',
+    ].join('\n') + '\n',
     { mode: 0o600 },
   );
 }
