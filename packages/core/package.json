@@ -58,6 +58,10 @@
       "types": "./dist/undo.d.ts",
       "import": "./dist/undo.js"
     },
+    "./run": {
+      "types": "./dist/run.d.ts",
+      "import": "./dist/run.js"
+    },
     "./remote": {
       "types": "./dist/remote.d.ts",
       "import": "./dist/remote.js"

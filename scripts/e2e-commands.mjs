@@ -535,9 +535,120 @@ const CASES = {
   },
 
   async audit(ctx) {
-    const result = ctx.runJson(['audit', 'list', ...dataOnly(ctx), '--json']);
-    assert(Array.isArray(result.entries), 'audit list 未返回 entries');
-    assert(result.auditPath.includes('audit'), 'audit list 未返回 auditPath');
+    await ctx.writeHosts(baseHosts());
+    ctx.runJson(['add', '10.0.0.12', HOST, ...workspace(ctx), '--json']);
+
+    const listed = ctx.runJson(['audit', 'list', ...dataOnly(ctx), '--json']);
+    assert(Array.isArray(listed.records), 'audit list 未返回 records');
+    assert(listed.auditPath.includes('audit'), 'audit list 未返回 auditPath');
+    const write = listed.records.find((record) => record.action === 'write-ok');
+    assert(write, 'audit list 缺少成功写入记录 write-ok');
+    assert(write.onChain === true, '成功写入记录不在哈希链上');
+    assert(write.beforeSha256 && write.afterSha256, '写入记录缺少前后内容哈希');
+
+    const shown = ctx.runJson(['audit', 'show', String(write.id), ...dataOnly(ctx), '--json']);
+    assert(shown.action === 'write-ok' && shown.onChain === true, 'audit show 字段不符');
+
+    const verified = ctx.runJson(['audit', 'verify', ...dataOnly(ctx), '--json']);
+    assert(verified.ok === true, `audit verify 应为 ok，实际 ${JSON.stringify(verified.issues)}`);
+
+    const exported = ctx.run(['audit', 'export', '--format', 'ndjson', ...dataOnly(ctx)]);
+    assert(exported.stdout.trim().split('\n').length >= 1, 'audit export --format ndjson 输出为空');
+
+    const filtered = ctx.runJson([
+      'audit',
+      'list',
+      '--result',
+      'failed',
+      ...dataOnly(ctx),
+      '--json',
+    ]);
+    assert(filtered.records.length === 0, '--result failed 不应包含成功写入');
+
+    ctx.run(['audit', 'list', '--result', 'bogus', ...dataOnly(ctx)], { expect: 2 });
+    ctx.run(['audit', 'show', '999999', ...dataOnly(ctx)], { expect: 2 });
+  },
+
+  async undo(ctx) {
+    await ctx.writeHosts(baseHosts());
+    const before = await ctx.readHosts();
+    ctx.runJson(['add', '10.0.0.12', HOST, ...workspace(ctx), '--json']);
+
+    const dry = ctx.runJson(['undo', '--dry-run', ...workspace(ctx), '--json']);
+    assert(dry.dryRun === true && dry.changed === true, 'undo --dry-run 应报告 changed=true');
+    assert((await ctx.readHosts()).includes(HOST), 'undo --dry-run 不应写盘');
+
+    const undone = ctx.runJson(['undo', ...workspace(ctx), '--json']);
+    assert(undone.changed === true && undone.steps === 1, 'undo 未报告撤销 1 步');
+    assert((await ctx.readHosts()) === before, 'undo 后 hosts 未回到写入前内容');
+
+    const redone = ctx.runJson(['undo', ...workspace(ctx), '--json']);
+    assert(redone.changed === true, '再次 undo 应可回放（redo）');
+    assert((await ctx.readHosts()).includes(HOST), '再次 undo 未恢复被撤销的写入');
+
+    ctx.run(['undo', '--steps', '5', ...workspace(ctx)], { expect: 2 });
+
+    await ctx.writeHosts(`${await ctx.readHosts()}# manual-edit${eol}`);
+    ctx.run(['undo', ...workspace(ctx)], { expect: 3 });
+  },
+
+  async run(ctx) {
+    await ctx.writeHosts(baseHosts());
+
+    ctx.run(
+      [
+        'run',
+        '--host',
+        'run.example.com',
+        '--ip',
+        '10.0.0.99',
+        ...workspace(ctx),
+        '--',
+        process.execPath,
+        '-e',
+        '0',
+      ],
+      { expect: 0 },
+    );
+    assert(!(await ctx.readHosts()).includes('run.example.com'), 'run 结束后临时条目未移除');
+    const listed = ctx.runJson(['run', 'list', ...workspace(ctx), '--json']);
+    assert(listed.sessions.length === 0, 'run 结束后仍留有会话租约');
+
+    ctx.run(
+      [
+        'run',
+        '--host',
+        'run.example.com',
+        '--ip',
+        '10.0.0.99',
+        ...workspace(ctx),
+        '--',
+        process.execPath,
+        '-e',
+        'process.exit(3)',
+      ],
+      { expect: 3 },
+    );
+    assert(!(await ctx.readHosts()).includes('run.example.com'), '子进程失败后临时条目未移除');
+
+    ctx.run(
+      [
+        'run',
+        '--host',
+        'run.example.com',
+        '--ip',
+        '10.0.0.99',
+        ...workspace(ctx),
+        '--',
+        'definitely-not-a-real-executable',
+      ],
+      { expect: 2 },
+    );
+    assert(!(await ctx.readHosts()).includes('run.example.com'), '命令不存在时不应残留条目');
+    assert((await ctx.readHosts()).includes('# e2e-top'), 'run 失败路径改动了围栏外内容');
+
+    const gc = ctx.runJson(['run', 'gc', ...workspace(ctx), '--json']);
+    assert(Array.isArray(gc.removed) && gc.removed.length === 0, '空环境 run gc 不应回收任何会话');
   },
 
   async completion(ctx) {

@@ -31,6 +31,23 @@ export const renderSourceSchema = z.object({
 
 export type RenderSource = z.infer<typeof renderSourceSchema>;
 
+/**
+ * `run` 的会话租约。父进程被强杀时无法执行清理，记录会残留；
+ * `run list` / `run gc` 依据 pid 是否存活回收。
+ */
+export const sessionRecordSchema = z.object({
+  sessionId: z.string().min(1),
+  layerId: z.string().min(1),
+  pid: z.number().int(),
+  ip: z.string().min(1),
+  hostnames: z.array(z.string().min(1)).min(1),
+  command: z.array(z.string()).default(() => []),
+  startedAt: z.string(),
+  heartbeatAt: z.string(),
+});
+
+export type SessionRecord = z.infer<typeof sessionRecordSchema>;
+
 export const lastRenderSchema = z.object({
   at: z.string(),
   planHash: z.string(),
@@ -52,6 +69,8 @@ export const stateSchema = z
     initialized: z.boolean().default(false),
     ttl: z.array(ttlRecordSchema).default(() => []),
     lastRender: lastRenderSchema.optional(),
+    /** `run` 会话租约；残留记录由 run gc 回收。 */
+    sessions: z.array(sessionRecordSchema).default(() => []),
   })
   .passthrough();
 

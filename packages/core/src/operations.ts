@@ -105,6 +105,15 @@ export type {
   HistorySnapshot,
 } from './engine/history';
 export { readHistory } from './engine/history';
+export { startRun, finishRun, listRuns, gcRuns } from './engine/run';
+export type {
+  RunStartOptions,
+  RunStartResult,
+  RunFinishResult,
+  RunListResult,
+  RunGcResult,
+  RunView,
+} from './engine/run';
 export { verifyManagedEntries } from './engine/verify';
 export type { VerifyOptions, VerifyResult, VerifyFailure } from './engine/verify';
 export type {

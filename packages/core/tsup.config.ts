@@ -15,6 +15,7 @@ export default defineConfig({
     export: 'src/engine/export.ts',
     audit: 'src/engine/audit.ts',
     undo: 'src/engine/undo.ts',
+    run: 'src/engine/run.ts',
     remote: 'src/remote/service.ts',
     doctor: 'src/diagnostics/doctor.ts',
     system: 'src/entries/system.ts',

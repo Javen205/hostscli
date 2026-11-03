@@ -1,13 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
-  addHosts,
-  listUndoHistory,
-  readHistory,
-  setHostsEnabled,
-  undoHosts,
-} from '../index';
+import { addHosts, listUndoHistory, readHistory, setHostsEnabled, undoHosts } from '../index';
 import { HOSTS, makeEnv } from './batch1-helpers';
 
 describe('undo：意图级撤销', () => {

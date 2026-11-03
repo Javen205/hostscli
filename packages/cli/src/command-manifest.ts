@@ -123,6 +123,11 @@ export const COMMAND_ENTRIES: CommandEntry[] = [
     register: async (program) => (await import('./commands/undo')).registerUndoCommand(program),
   },
   {
+    name: 'run',
+    description: '命令存活期间临时生效的 hosts 条目（退出后自动移除）',
+    register: async (program) => (await import('./commands/run')).registerRunCommand(program),
+  },
+  {
     name: 'completion',
     description: '输出 shell 补全脚本（bash / zsh / fish）',
     register: async (program) =>
