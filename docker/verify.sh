@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 #
-# Docker Linux 验证：在容器内跑完整闸门 + 临时 hostsPath 冒烟。
+# Docker Linux 验证：在容器内调用单一验证入口，与本地、CI 保持一致。
 #
 # 重要限制（不要误判为代码缺陷）：
 #   容器里的 /etc/hosts 是 Docker bind mount。对 bind mount 上的文件做
 #   rename() 会返回 EBUSY，而本项目用「同目录临时文件 + rename」实现原子写。
-#   因此本脚本**从不写 /etc/hosts**，而是通过 `config set hostsPath` 把
-#   hosts 指向 /tmp/hosts-cli-test/hosts（普通文件），冒烟断言全部基于该文件。
+#   因此本脚本**从不写 /etc/hosts**：verify 内的冒烟与 e2e 都把 hostsPath
+#   指向 /tmp 下的普通文件（临时 --data-dir + 临时 hostsPath）。
 #
 # 用法（在宿主机仓库根目录）：
 #   bash docker/run-linux-verify.sh
 #
 # 脚本约定：/src 是只读挂载的仓库，/app 是可写副本（避免 Linux 二进制污染宿主 node_modules）。
+# 容器内 root 会绕过只读权限位、且镜像未安装 git，相关能力由 verify 内的步骤打印 SKIP 说明。
 set -euo pipefail
 
 export CI=true
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
-SMOKE_ROOT=/tmp/hosts-cli-test
 SRC=${SRC:-/src}
 APP=${APP:-/app}
 
@@ -34,7 +34,7 @@ if [ ! -d "$SRC/packages" ]; then
   exit 1
 fi
 
-echo "[1/7] 复制仓库到可写目录（排除 node_modules/.git/构建产物）"
+echo "[1/3] 复制仓库到可写目录（排除 node_modules/.git/构建产物）"
 mkdir -p "$APP"
 tar -C "$SRC" \
   --exclude=node_modules \
@@ -44,26 +44,11 @@ tar -C "$SRC" \
   -cf - . | tar -C "$APP" -xf -
 cd "$APP"
 
-echo "[2/7] pnpm install --frozen-lockfile"
+echo "[2/3] pnpm install --frozen-lockfile"
 pnpm install --frozen-lockfile
 
-echo "[3/7] pnpm build"
-pnpm build
-
-echo "[4/7] pnpm typecheck"
-pnpm typecheck
-
-echo "[5/7] pnpm lint"
-pnpm lint
-
-echo "[6/7] pnpm test"
-pnpm test
-
-echo "[7/7] pnpm format:check + 冒烟"
-pnpm format:check
-
-rm -rf "$SMOKE_ROOT"
-node scripts/smoke-ci.mjs
+echo "[3/3] pnpm verify --skip-install（本地 / Docker / CI 同一入口）"
+pnpm verify --skip-install
 
 echo
 echo "== Docker Linux 验证完成 =="

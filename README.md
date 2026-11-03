@@ -106,13 +106,14 @@ pnpm install
 
 常用命令：
 
-| 命令                | 作用                                                         |
-| ------------------- | ------------------------------------------------------------ |
-| `pnpm build`        | 构建 `packages/core` 与 `packages/cli`（tsup，输出 `dist/`） |
-| `pnpm test`         | 运行 Vitest 测试                                             |
-| `pnpm lint`         | ESLint 检查                                                  |
-| `pnpm typecheck`    | TypeScript 类型检查（两个包）                                |
-| `pnpm format:check` | Prettier 格式检查；需要自动修复时用 `pnpm format`            |
+| 命令                | 作用                                                               |
+| ------------------- | ------------------------------------------------------------------ |
+| `pnpm build`        | 构建 `packages/core` 与 `packages/cli`（tsup，输出 `dist/`）       |
+| `pnpm test`         | 运行 Vitest 测试                                                   |
+| `pnpm lint`         | ESLint 检查                                                        |
+| `pnpm typecheck`    | TypeScript 类型检查（两个包）                                      |
+| `pnpm format:check` | Prettier 格式检查；需要自动修复时用 `pnpm format`                  |
+| `pnpm verify`       | 单一验证入口：build、typecheck、lint、test、格式、冒烟与命令级 e2e |
 
 目录结构：
 
@@ -121,7 +122,7 @@ pnpm install
 
 提交 PR 前：
 
-1. 改动前先跑 `pnpm test`，改动后跑完整闸门：`pnpm build && pnpm typecheck && pnpm lint && pnpm test && pnpm format:check`。
+1. 改动前先跑 `pnpm test`，改动后跑 `pnpm verify`（包含 build、typecheck、lint、test、format:check、冒烟与命令级 e2e）；依赖已装好时用 `pnpm verify:fast` 跳过安装。
 2. 对外可见的变更（新命令、参数、行为调整）用 Changesets 记录：`pnpm changeset`，按提示选择包与变更类型。
 3. 提交信息使用 Conventional Commits，例如 `feat: 支持按网络切换规则层`、`fix: 修复围栏外内容被改写`。说明"为什么"，而不是复述 diff。
 4. 不要提交 `node_modules/`、`dist/`、临时数据目录或系统 hosts 的测试副本。
