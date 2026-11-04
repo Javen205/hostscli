@@ -239,13 +239,15 @@ $HCLI config keys [--json]
 ```text
 defaults.backupKeep            defaults.dnsFlush              defaults.ttlWarnThreshold
 defaults.verifyAfterApply      defaults.verifyMaxHostnames    defaults.verifyTimeoutMs
-defaults.auditKeep             defaults.historyKeep
-hostsPath                      profilesDir                   remote.maxBytes
-remote.timeoutMs               output.color                  output.format
-ttl.tickInterval               ttl.timerMode
+defaults.auditKeep             defaults.historyKeep           logging.enabled
+logging.keep                   hostsPath                      profilesDir
+remote.maxBytes                remote.timeoutMs               output.color
+output.format                  ttl.tickInterval               ttl.timerMode
 ```
 
 `defaults.auditKeep`（默认 1000，0 表示不轮转）控制 `audit.log` 保留条数；`defaults.historyKeep`（默认 30）控制 undo 历史保留次数。轮转会从最旧记录开始删除，链头相应前移，`audit verify` 会如实报告当前链覆盖范围。
+
+`logging.enabled`（默认 `true`）与 `logging.keep`（默认 500）控制普通运行日志 `dataDir/logs/run.jsonl`：append-only JSONL、0600、按行数轮转；只记录命令、参数、事件与结果，不写规则正文，也不进入审计哈希链。`logging.enabled=false` 时不再追加（已关闭时执行的命令自身也不会留下运行日志）。
 
 布尔值只接受 `true/false`；数字只接受非负整数；时长键会先按 TTL 语法校验。
 
@@ -314,6 +316,56 @@ $HCLI run gc [--dry-run] [--json]
 - 会话以 `session-<hex>` 命名并写入 `state.sessions` 租约，父进程被强杀时可执行 `run list` 查看、`run gc` 回收。
 - 多个 `run` 可并存；清理只影响对应会话，不会覆盖其他命令在此期间对托管区的改写。
 - `run` 与 `undo` / 普通写入共用同一把工作区锁与 `--verify` 语义；`run list` / `run gc` 也需要传入与启动时相同的 `--file` / `--data-dir`。
+
+### 4.19 写操作留痕对账表
+
+口径：**审计**指进入 `audit.log` 哈希链（或明确标记未审计）；**undo** 指可在 `undo` 中按原始字节回放；**运行日志**指 `dataDir/logs/run.jsonl`。只读命令三项皆无。
+
+| 命令 / 子命令 | 写磁盘 | 审计 | undo | 运行日志 |
+| --- | --- | --- | --- | --- |
+| `list` | 否 | 否 | 否 | 否 |
+| `add` / `remove` / `enable` / `disable` | 是（hosts/state） | 是 | 是 | 是 |
+| `init` / `apply` | 是（hosts/state） | 是 | 是（有变更时） | 是 |
+| `backup` | 是（backups/） | 是 | 否（备份是恢复原语） | 是 |
+| `restore` | 是（hosts/state） | 是 | 否（用备份反向恢复） | 是 |
+| `profile list` / `show` | 否 | 否 | 否 | 否 |
+| `profile create` | 是（profiles/） | 是 | 是 | 是 |
+| `profile remove` | 是（profiles/） | 是 | 是 | 是 |
+| `profile update` | 是（profiles/；激活时连带 hosts） | 是 | 否（纯元数据；连带 hosts 变化仍可 undo） | 是 |
+| `profile use` / `save` | 是（hosts/profiles/state） | 是 | 是 | 是 |
+| `ttl list` / `due` | 否 | 否 | 否 | 否 |
+| `ttl pause` / `resume` / `extend` / `tick` | 是（hosts/state，仅变更时） | 是 | 是 | 是 |
+| `stack layer list` / `stack explain` | 否 | 否 | 否 | 否 |
+| `stack layer add` | 是（profiles/state） | 是 | 否（层导入不是 hosts 写入；可用 `profile remove` 反向） | 是 |
+| `stack layer enable` / `disable` | 是（state） | 是 | 否 | 是 |
+| `stack apply` | 是（hosts/state） | 是 | 是 | 是 |
+| `doctor` | 否 | 否 | 否 | 否 |
+| `remote list` | 否 | 否 | 否 | 否 |
+| `remote add` / `remove` / `update` | 是（config；update 还写 profiles/cache） | 是 | 否（订阅登记用 add/remove 反向调整） | 是 |
+| `dns flush` | 否（只清系统缓存） | 否 | 否 | 否（不绑定数据目录） |
+| `config show` / `keys` | 否 | 否 | 否 | 否 |
+| `config set` | 是（config.json） | 是 | 否 | 是 |
+| `network status` | 否 | 否 | 否 | 否 |
+| `network map` / `unmap` | 是（config.json） | 是 | 否 | 是 |
+| `network auto`（dry-run） | 否 | 否 | 否 | 否 |
+| `network auto --apply` | 是（hosts/state） | 是 | 是 | 是 |
+| `git status` / `log` / `diff` | 否 | 否 | 否 | 否 |
+| `git init` / `snapshot` | 是（数据目录内 `.git`） | 是 | 否（git 历史即回滚点） | 是 |
+| `git rollback` | 是（数据目录；默认重建 hosts） | 是 | 部分（hosts 重建可 undo；仓库回滚不可） | 是 |
+| `export` | 是（仅用户 `--out` 指定文件） | 否（见下） | 否 | 是（event=export） |
+| `audit list` / `show` / `verify` | 否 | 否 | 否 | 否 |
+| `audit export` | 否（只写 stdout） | 否 | 否 | 否 |
+| `undo` | 是（hosts/state/profiles） | 是（undo-ok） | 是（可再撤销） | 是 |
+| `run` | 是（hosts/state/profiles） | 是 | 是 | 是 |
+| `run list` | 否 | 否 | 否 | 否 |
+| `run gc` | 是（hosts/state/profiles） | 是 | 是 | 是 |
+| `completion` | 否 | 否 | 否 | 否 |
+
+两条口径说明：
+
+- `export` 写入的是**用户指定路径**的文件，可能位于数据目录之外，内容只是数据目录的只读快照；把它塞进审计链会让"审计 = 对托管状态的写入"这一语义失真，也未改变任何受管状态。因此只记运行日志（`event=export`），不入审计链。`audit export` 仅写 stdout，同样不审计。
+- `dns flush` 是系统缓存副作用，不读写数据目录，没有可审计的状态变更；失败会以 `NETWORK` 错误返回。
+- 审计写入失败沿用统一策略：主操作成功 + `audit-unaudited.jsonl` 标记 + warning，不阻断；运行日志写失败直接忽略。
 
 ## 5. 退出码
 

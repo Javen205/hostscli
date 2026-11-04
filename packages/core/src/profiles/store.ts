@@ -117,6 +117,8 @@ export async function readProfile(profilesDir: string, id: string): Promise<Prof
     throw new EntryNotFoundError(`方案不存在：${id}（${filePath}）`);
   });
 
+  // 文件名即 ID：内容与文件名不一致通常是手工改名或复制造成，
+  // 继续读会让“改 id 不生效”以静默方式扩散，必须当作损坏拒绝。
   if (profile.id !== id) {
     throw new StorageCorruptError(filePath, `方案文件中的 id（${profile.id}）与文件名不一致`);
   }

@@ -105,6 +105,8 @@ export function parseHosts(raw: Buffer, options: ParseOptions = {}): HostsDocume
   const fence = locateFence(lines);
   const entries: HostEntry[] = [];
 
+  // 围栏内按 managed 解析（禁用前缀保留为 enabled=false），围栏外一律 external。
+  // 索引是半开区间：managedRange 转为 1-based 行号给用户看，解析时仍用 0-based。
   for (const line of lines) {
     const inManagedBlock = fence !== null && line.index > fence.begin && line.index < fence.end;
 

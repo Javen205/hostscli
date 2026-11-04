@@ -95,6 +95,8 @@ commitPlan
 7. **撤销可复现**：`dataDir/history/<id>/` 保存写入前的 hosts / state / 相关 profile 原始字节与 manifest，undo 直接按字节回放；回放前必须校验最新记录的"写入后"指纹与当前磁盘一致，不一致以 `CONFLICT` 拒绝。undo 自身也写入一条可再撤销的历史记录。
 8. **审计链自洽**：新记录以 `recordHash = sha256(JSON.stringify(base))` 串联，`base` 为记录去掉 `recordHash/onChain/legacy`；`audit.log.chain.json` 保存 `seq / lastHash / baseHash`，用于发现尾部截断。旧格式记录保持只读并标记"不在链上"，不伪造完整性。
 9. **run 租约**：`run` 以最高优先级创建临时方案层与 `state.sessions` 租约，子进程存活期间不持锁；退出或 `run gc` 时在同一写路径清理，父进程被强杀时由 pid 存活性判定回收。
+10. **非 hosts 写入同样留痕**：`profile create/remove` 走原始字节快照（hosts + state + 目标方案）并进入 undo；`profile update` 等纯元数据变更只入审计，不进 undo 栈。config / network / stack 层开关 / remote / git / backup / restore 的落盘都写 `write-ok` 审计；`export` 只写用户指定文件，按"不改变受管状态"的口径只记运行日志。
+11. **审计与运行日志分离**：审计是可校验的写凭据（哈希链、0600、原子追加）；运行日志 `logs/run.jsonl` 只用于排障，append-only、0600、按 `logging.keep` 轮转，任何失败都不得影响主流程。
 
 这些不变量由 `packages/core` 的解析、引擎、操作与 CLI 集成测试覆盖，包括权限位、原子写、并发写入、TTL 结算与回滚路径。
 
@@ -122,6 +124,7 @@ commitPlan
 | 新远程订阅协议 | `remote/service.ts` | 保持大小上限、超时、ETag/Last-Modified、失败保留上次缓存 |
 | 新 hosts 语法 / 指令 | `hosts/parser.ts` + `hosts/render.ts` | 必须保持无损往返；先补夹具测试再改 |
 | 新增持久化文件 | `storage/paths.ts` + `storage/json.ts` | 数据文件默认 `0600`；新增目录注意 `mkdir` mode |
+| 新增非 hosts 写操作 | `engine/aux-write.ts` 的 `auditAuxWrite`（必要时再 `recordOperation`） | 写成功后补审计；审计失败只标记未审计，不回滚主操作 |
 
 ## 6. 数据目录布局
 
@@ -137,6 +140,7 @@ cache/remote/        远程订阅内容与 ETag
 audit.log            JSONL 审计（0600）
 audit.log.chain.json 审计链状态：seq / lastHash / baseHash（0600）
 audit-unaudited.jsonl 审计写入失败的补记标记（0600）
+logs/run.jsonl       普通运行日志（JSONL，0600，按 logging.keep 轮转）
 .git/                可选，git 快照仓库（不包含 cache/backups/history/审计链）
 ```
 
