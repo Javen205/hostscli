@@ -92,11 +92,11 @@ commitPlan
 4. **原子替换**：同目录临时文件 + fsync + rename（+ 目录 fsync）；失败清理临时文件。Windows 对 `EBUSY/EPERM/EACCES` 重试 3 次。
 5. **回滚语义**：写后校验失败、验证失败、profile / state 持久化失败，都回滚到写入前字节；但若磁盘内容已被其他进程改写，则跳过回滚并 warning/audit，避免覆盖他人改动。
 6. **围栏唯一性**：起止围栏各恰好一次，否则 `HOSTS_FORMAT`。
-7. **撤销可复现**：`dataDir/history/<id>/` 保存写入前的 hosts / state / 相关 profile 原始字节与 manifest，undo 直接按字节回放；回放前必须校验最新记录的"写入后"指纹与当前磁盘一致，不一致以 `CONFLICT` 拒绝。undo 自身也写入一条可再撤销的历史记录。
-8. **审计链自洽**：新记录以 `recordHash = sha256(JSON.stringify(base))` 串联，`base` 为记录去掉 `recordHash/onChain/legacy`；`audit.log.chain.json` 保存 `seq / lastHash / baseHash`，用于发现尾部截断。旧格式记录保持只读并标记"不在链上"，不伪造完整性。
-9. **run 租约**：`run` 以最高优先级创建临时方案层与 `state.sessions` 租约，子进程存活期间不持锁；退出或 `run gc` 时在同一写路径清理，父进程被强杀时由 pid 存活性判定回收。
+7. **撤销可复现**：`dataDir/history/<id>/` 保存写入前的 hosts / state / 相关 profile 原始字节与 manifest，undo 按记录**逆序**逐条回放各自的"写入前"快照；回放前校验每条快照的 `sha256` 与记录 `before` 指纹一致、`record.hostsPath` 与本次目标一致，不一致以 `CONFLICT` 拒绝且不部分写入。回放 state 时丢弃 pid 已死的 run 租约并清理会话方案，已到期 TTL 直接丢弃。undo 自身也写入一条可再撤销的历史记录。
+8. **审计是一致性记录，不是防篡改凭据**：`audit.log` 为 append-only JSONL，保留单调递增的 `id` 与时间戳；不维护哈希链或 sidecar，因为能写 `dataDir` 的同一用户同样能改写审计。`audit verify` 只检查文件可读、每行可解析、时间与数字 ID 单调、轮转后自洽。旧版本带链字段的记录仍可读，链字段被忽略。
+9. **run 租约**：`run` 以最高优先级创建临时方案层与 `state.sessions` 租约，子进程存活期间不持锁；退出或 `run gc` 时在同一写路径批量清理（多孤儿只重建一次 hosts、只写一条汇总审计）。存活判断仅依赖 pid，存在 pid 复用导致漏回收的风险，`run gc --force` 提供显式兜底。
 10. **非 hosts 写入同样留痕**：`profile create/remove` 走原始字节快照（hosts + state + 目标方案）并进入 undo；`profile update` 等纯元数据变更只入审计，不进 undo 栈。config / network / stack 层开关 / remote / git / backup / restore 的落盘都写 `write-ok` 审计；`export` 只写用户指定文件，按"不改变受管状态"的口径只记运行日志。
-11. **审计与运行日志分离**：审计是可校验的写凭据（哈希链、0600、原子追加）；运行日志 `logs/run.jsonl` 只用于排障，append-only、0600、按 `logging.keep` 轮转，任何失败都不得影响主流程。
+11. **审计与运行日志分离**：审计记录写操作事实（结构化 JSONL、0600、append-only、按 `auditKeep` 轮转），不承诺防篡改；运行日志 `logs/run.jsonl` 只用于排障，append-only、0600、按 `logging.keep` 轮转，任何失败都不得影响主流程。
 
 这些不变量由 `packages/core` 的解析、引擎、操作与 CLI 集成测试覆盖，包括权限位、原子写、并发写入、TTL 结算与回滚路径。
 
@@ -115,7 +115,7 @@ commitPlan
 | --- | --- | --- |
 | 新增一级命令 | `packages/cli/src/command-manifest.ts` + `packages/cli/src/commands/<name>.ts` | 描述要和清单一致；有写操作时复用 `common.ts` 的 workspace 选项 |
 | 新增二级子命令 | 对应 `commands/<name>.ts` 的注册函数 | 仍然只在命中一级命令后才加载 |
-| 新增配置项 | `packages/core/src/storage/config.ts` 的 schema + `configKeys/setConfigValue` | 同步 [cli-reference.md](./cli-reference.md)；`passthrough` 允许旧版本读新字段，但 `config set` 只接受白名单键 |
+| 新增配置项 | `packages/core/src/storage/config.ts` 的 schema + `configKeys/setConfigValue` | 同步 [cli-reference.md](./cli-reference.md)；`passthrough` 允许旧版本读新字段，但 `config set` 只接受白名单键；移除键时在 `REMOVED_CONFIG_KEYS` 里登记并给 warning |
 | 新增规则排除来源（维护窗口等） | `engine/layers.ts` 的 `buildLayerInputs` | 返回 `disabled` 供输出解释；不要把排除写进 hosts 文件 |
 | 新增冲突策略 | `stack/merge.ts` 的 `ConflictStrategy` + `mergeLayers` | 同步 CLI `--on-conflict` 选项与文档 |
 | 新增输出格式 | `packages/cli/src/output/table.ts` + 各命令的 `printJson` / `printMutation` | `--json` 是脚本契约，字段改名属于破坏性变更 |
@@ -137,11 +137,12 @@ profiles/<id>.json   方案（规则集），紧凑 JSON
 history/             写入历史：journal.jsonl + <id>/ 原始字节快照（0700/0600）
 backups/             hosts 备份，按 backupKeep 清理
 cache/remote/        远程订阅内容与 ETag
-audit.log            JSONL 审计（0600）
-audit.log.chain.json 审计链状态：seq / lastHash / baseHash（0600）
+audit.log            JSONL 审计（结构化写入记录，0600）
 audit-unaudited.jsonl 审计写入失败的补记标记（0600）
 logs/run.jsonl       普通运行日志（JSONL，0600，按 logging.keep 轮转）
-.git/                可选，git 快照仓库（不包含 cache/backups/history/审计链）
+.git/                可选，git 快照仓库（不包含 cache/backups/history/审计）
 ```
 
 跨进程锁放在系统临时目录 `hostscli-locks/`，避免系统 hosts 不可写时无法加锁。工作区锁按排序同时获取 `lockPathFor(hostsPath)` 与 `lockPathForDataDir(dataDir)`，覆盖"读 - 改 - 写 - 校验 - 持久化"全过程；配置文件在锁外加载，避免锁内再取锁。
+
+锁按 hosts 路径串行化写入，但**不支持多个 dataDir 共用同一份 hosts**：串行不等于合并，后写者会按自己的 profiles/state 整段重建 hosts，先写者条目消失。需要多套规则时请在同一个 dataDir 内用 profile/layer。
