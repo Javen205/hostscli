@@ -72,7 +72,7 @@ hostscli 只改写由下列围栏圈定的区域：
 
 ```text
 config.json          配置（0600）
-state.json           运行态：activeLayers / initialized / ttl / lastRender（0600）
+state.json           运行态：activeLayers / initialized / ttl / lastRender（时间与整文件哈希）/ sessions（0600）
 profiles/<id>.json   方案（规则集）
 backups/             hosts 备份
 cache/remote/        远程订阅内容与 ETag
@@ -103,6 +103,24 @@ hostscli 不追求覆盖图形工具的全部体验，差异化集中在"单条�
 - 通配域名、敏感规则加密、多机同步、AI 自然语言转操作。
 - 导入 SwitchHosts 数据。
 - Windows 的 Wi-Fi SSID 识别与 PowerShell 补全。
+
+### 规模与数据目录占用
+
+以默认 `historyKeep=30`、`backupKeep=20`、每条规则一个主机名为夹具，实测（macOS / APFS；字节数是落盘文件总量，耗时受机器负载影响仅供参考）：
+
+| hosts 规模 | hosts 文件 | 单次写回落盘 | 稳态数据目录 | 稳态 / hosts | 峰值 RSS | 单次写回耗时 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 60k | 2.15 MB | 12.7 MB | 238 MB | 约 116 倍 | 约 556 MB | 约 3.3 s |
+| 100k | 3.59 MB | 21.1 MB | 396 MB | 约 116 倍 | 约 864 MB | 约 5.8 s |
+| 200k | 7.31 MB | 42.8 MB | 803 MB | 约 115 倍 | 约 1.6 GB | 约 11 s |
+
+- **60k：可用。** 每次写回在数秒内完成，数据目录约数百 MB，普通开发机可以承受。
+- **100k：经本次优化后仍偏重。** 单次写回约 6 秒、稳态目录约 400 MB、峰值内存约 860 MB；写入频繁或磁盘紧张时体验明显下降。
+- **200k：不支持。** 单次写回超过 10 秒、稳态目录约 800 MB、峰值内存约 1.6 GB，低内存机器有被系统终止的风险。
+
+超出上述规模时，每次写回都会重写 hosts、方案与 state，并生成 undo 快照与备份，等待时间与目录占用同步上升；稳态目录约为 hosts 文件的 115 倍，可按 `hosts 文件大小 × 115` 估算。需要压缩占用时可降低 `defaults.historyKeep` / `defaults.backupKeep`，代价是 undo 可回退步数与备份份数减少。
+
+本次优化移除了 `state.lastRender` 中按主机名逐条保存的来源副本；该副本没有读取方，`stack explain` 与 `doctor` 都从当前规则和 hosts 现算。稳态占用因此从约 hosts 的 216 倍降到约 116 倍，旧 state 中的该字段会被忽略，下一次写入后自然消失。
 
 ## 8. 运行要求
 
