@@ -40,9 +40,11 @@ function canonicalPath(value: string): string {
 /**
  * 由 hosts 路径生成稳定锁名。
  *
- * 锁必须只按 hosts 文件取键：不同数据目录的两个实例写同一份 hosts 时，
- * 若把 dataDir 掺进哈希就会各拿各的锁，导致后写者覆盖先写者的规则。
- * `dataDir` 参数仅为兼容旧调用保留，不再参与锁名计算。
+ * 锁按 hosts 文件取键，保证任意两个实例对同一份 hosts 的写入是串行的。
+ * 但串行不等于合并：两个 dataDir 各自持有独立的 profiles/state，后写者会
+ * 按自己的规则整段重建 hosts，先写者的条目因此消失。**不支持多个 dataDir
+ * 共用同一份 hosts**；需要多套规则时请在同一个 dataDir 内用 profile/layer。
+ * `dataDir` 参数仅为兼容旧调用保留，不参与锁名计算。
  */
 export function lockPathFor(hostsPath: string, _dataDir?: string): string {
   const digest = createHash('sha256').update(canonicalPath(hostsPath)).digest('hex').slice(0, 16);
@@ -81,23 +83,35 @@ async function tryCreate(lockPath: string, token: string): Promise<boolean> {
 async function removeStale(lockPath: string, staleMs: number): Promise<boolean> {
   try {
     const info = await stat(lockPath);
-    if (Date.now() - info.mtimeMs < staleMs) return false;
-    // 读一次 PID：如果进程还活着，不能仅凭时间删锁。
+    // 先读 PID：持有者已退出时，锁立即失效，不应再等 staleMs。
+    // 只有无法判断存活（内容损坏 / 无 pid）时才退回时间门槛，
+    // 避免把刚创建、内容尚未写完的锁误删。
+    let pidKnown = false;
+    let pidAlive = true;
     try {
       const content = JSON.parse(await readFile(lockPath, 'utf8')) as { pid?: number };
       if (typeof content.pid === 'number') {
+        pidKnown = true;
         // 同一进程内并发调用时，锁一定仍然有效，不能按时间清理。
         if (content.pid === process.pid) return false;
         try {
           process.kill(content.pid, 0);
-          return false;
+          pidAlive = true;
         } catch {
-          // 进程不存在，允许清理。
+          pidAlive = false;
         }
       }
     } catch {
-      // 锁内容损坏，允许清理。
+      // 锁内容损坏，按无法判断存活处理。
     }
+
+    if (pidKnown && !pidAlive) {
+      await unlink(lockPath).catch(() => undefined);
+      return true;
+    }
+    if (pidKnown && pidAlive) return false;
+    if (Date.now() - info.mtimeMs < staleMs) return false;
+
     await unlink(lockPath);
     return true;
   } catch (error) {

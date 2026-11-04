@@ -54,7 +54,7 @@ function sessionLayerId(): string {
   return `session-${randomBytes(4).toString('hex')}`;
 }
 
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -148,25 +148,31 @@ export async function startRun(options: RunStartOptions): Promise<RunStartResult
   });
 }
 
-async function removeSession(
+async function removeSessions(
   workspace: Workspace,
-  session: SessionRecord,
+  sessions: SessionRecord[],
   command: string,
   args: string[],
 ): Promise<{ warnings: string[]; mutation: MutationResult | null }> {
   const warnings: string[] = [];
+  const layersToRemove = new Set(sessions.map((session) => session.layerId));
+  const idsToRemove = new Set(sessions.map((session) => session.sessionId));
   workspace.state.activeLayers = workspace.state.activeLayers.filter(
-    (id) => id !== session.layerId,
+    (id) => !layersToRemove.has(id),
   );
   workspace.state.sessions = workspace.state.sessions.filter(
-    (record) => record.sessionId !== session.sessionId,
+    (record) => !idsToRemove.has(record.sessionId),
   );
 
-  let sessionProfile: Profile | null = null;
-  try {
-    sessionProfile = await readProfile(workspace.paths.profilesDir, session.layerId);
-  } catch {
-    warnings.push(`会话层 ${session.layerId} 的方案文件已不存在，跳过方案清理。`);
+  const sessionProfiles: Profile[] = [];
+  const deleteLayers: string[] = [];
+  for (const session of sessions) {
+    deleteLayers.push(session.layerId);
+    try {
+      sessionProfiles.push(await readProfile(workspace.paths.profilesDir, session.layerId));
+    } catch {
+      warnings.push(`会话层 ${session.layerId} 的方案文件已不存在，跳过方案清理。`);
+    }
   }
 
   const { loaded, warnings: prepareWarnings } = await prepare(workspace);
@@ -177,19 +183,21 @@ async function removeSession(
   });
   const mutation = await commitPlan(workspace, plan, {
     // 把会话方案也纳入历史快照（内容不变，但删除后需要能由 undo 恢复）。
-    profiles: sessionProfile ? [sessionProfile] : [],
+    profiles: sessionProfiles,
     persistState: true,
     warnings,
     command,
     args,
-    deleteProfiles: [session.layerId],
+    deleteProfiles: deleteLayers,
   });
 
-  try {
-    await unlink(profilePath(workspace.paths.profilesDir, session.layerId));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      warnings.push(`删除会话方案 ${session.layerId} 失败：${String(error)}`);
+  for (const layerId of deleteLayers) {
+    try {
+      await unlink(profilePath(workspace.paths.profilesDir, layerId));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        warnings.push(`删除会话方案 ${layerId} 失败：${String(error)}`);
+      }
     }
   }
   return { warnings, mutation };
@@ -211,7 +219,7 @@ export async function finishRun(
       };
     }
 
-    const { warnings, mutation } = await removeSession(workspace, session, 'run', [
+    const { warnings, mutation } = await removeSessions(workspace, [session], 'run', [
       'cleanup',
       sessionId,
     ]);
@@ -254,14 +262,17 @@ export async function listRuns(options: WorkspaceOptions = {}): Promise<RunListR
 }
 
 /**
- * 回收父进程已退出（被强杀）的会话。只处理 pid 已不存在的记录；
- * 仍在运行的会话不会被误删。
+ * 回收父进程已退出（被强杀）的会话。默认只处理 pid 已不存在的记录；
+ * `force=true` 时忽略存活判断，回收所有会话（用于 pid 被复用时的人工兜底）。
+ *
+ * 多会话一次性重建 hosts 并只写一条汇总审计，避免逐会话整段重建的 O(N²) 行为。
  */
 export async function gcRuns(
-  options: WorkspaceOptions & { dryRun?: boolean } = {},
+  options: WorkspaceOptions & { dryRun?: boolean; force?: boolean } = {},
 ): Promise<RunGcResult> {
   return withWorkspace(options, async (workspace) => {
-    const orphans = workspace.state.sessions.map(toView).filter((session) => session.orphan);
+    const visible = workspace.state.sessions.map(toView);
+    const orphans = options.force ? visible : visible.filter((session) => session.orphan);
     if (orphans.length === 0) {
       return { changed: false, dryRun: Boolean(options.dryRun), removed: [], warnings: [] };
     }
@@ -275,14 +286,19 @@ export async function gcRuns(
     }
 
     const warnings: string[] = [];
-    for (const orphan of orphans) {
-      const session = workspace.state.sessions.find(
-        (record) => record.sessionId === orphan.sessionId,
-      );
-      if (session === undefined) continue;
-      const result = await removeSession(workspace, session, 'run', ['gc', session.sessionId]);
-      warnings.push(...result.warnings);
+    if (options.force) {
+      warnings.push('--force 已忽略进程存活判断；若目标会话仍在运行，其临时条目会立即消失。');
     }
+    const sessions = orphans
+      .map((orphan) =>
+        workspace.state.sessions.find((record) => record.sessionId === orphan.sessionId),
+      )
+      .filter((session): session is SessionRecord => session !== undefined);
+    const result = await removeSessions(workspace, sessions, 'run', [
+      'gc',
+      ...orphans.map((session) => session.sessionId),
+    ]);
+    warnings.push(...result.warnings);
 
     try {
       await appendAudit(

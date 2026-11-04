@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { finishRun, gcRuns, listRuns, startRun, undoHosts } from '../index';
+import { finishRun, gcRuns, listRuns, readAudit, startRun, undoHosts } from '../index';
 import { HOSTS, makeEnv, readStateFile } from './batch1-helpers';
 
 afterEach(() => {
@@ -104,6 +104,69 @@ describe('run：会话级临时条目', () => {
       expect(await readFile(env.hostsPath, 'utf8')).toBe(HOSTS);
       expect((await listRuns(env.options())).sessions).toHaveLength(0);
       expect(alive.session.sessionId).toBe(applied.removed[0]?.sessionId);
+    } finally {
+      await env.cleanup();
+    }
+  });
+
+  it('gc 回收多个孤儿只重建一次，并只写一条汇总审计', async () => {
+    const env = await makeEnv();
+    try {
+      const first = await startRun({
+        ...env.options(),
+        hostname: 'one.run.example.com',
+        ip: '10.0.0.94',
+        command: ['true'],
+      });
+      const second = await startRun({
+        ...env.options(),
+        hostname: 'two.run.example.com',
+        ip: '10.0.0.93',
+        command: ['true'],
+      });
+      const auditPath = join(env.dataDir, 'audit.log');
+      const before = await readAudit(auditPath, 100);
+
+      const statePath = join(env.dataDir, 'state.json');
+      const state = JSON.parse(await readFile(statePath, 'utf8')) as {
+        sessions: Array<{ pid: number }>;
+      };
+      for (const session of state.sessions) session.pid = 999999;
+      await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+
+      const gc = await gcRuns(env.options());
+      expect(gc.removed.map((session) => session.sessionId).sort()).toEqual(
+        [first.session.sessionId, second.session.sessionId].sort(),
+      );
+      expect(await readFile(env.hostsPath, 'utf8')).toBe(HOSTS);
+      expect((await listRuns(env.options())).sessions).toHaveLength(0);
+
+      const after = await readAudit(auditPath, 100);
+      const added = after.slice(before.length);
+      expect(added.filter((entry) => entry.action === 'write-ok').length).toBe(1);
+      expect(added.filter((entry) => entry.action === 'run-gc').length).toBe(1);
+    } finally {
+      await env.cleanup();
+    }
+  });
+
+  it('run gc --force 可回收 pid 被复用的会话', async () => {
+    const env = await makeEnv();
+    try {
+      const started = await startRun({
+        ...env.options(),
+        hostname: 'forced.run.example.com',
+        ip: '10.0.0.92',
+        command: ['true'],
+      });
+      expect((await listRuns(env.options())).sessions[0]?.alive).toBe(true);
+
+      const forced = await gcRuns({ ...env.options(), force: true });
+      expect(forced.removed).toHaveLength(1);
+      expect(forced.warnings.join('\n')).toContain('--force');
+      expect(await readFile(env.hostsPath, 'utf8')).toBe(HOSTS);
+      expect((await listRuns(env.options())).sessions).toHaveLength(0);
+      expect(forced.removed[0]?.sessionId).toBe(started.session.sessionId);
     } finally {
       await env.cleanup();
     }

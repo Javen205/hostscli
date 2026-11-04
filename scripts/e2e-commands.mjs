@@ -8,7 +8,7 @@
  * - 平台差异显式断言（Windows 的 network 不支持、离线 remote、git 缺失时打印 SKIP）。
  * - 每个用例独立目录，失败时打印退出码与 stderr 尾部，便于在 CI 日志定位。
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -100,6 +100,32 @@ function dataOnly(ctx) {
 function hasGit() {
   const result = spawnSync('git', ['--version'], { encoding: 'utf8' });
   return result.status === 0;
+}
+
+async function waitFor(predicate, description, timeoutMs = 10_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`等待超时：${description}`);
+}
+
+async function assertNoSidecar(path) {
+  try {
+    await readFile(path);
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  throw new Error(`不应存在旧的链 sidecar：${path}`);
+}
+
+function spawnCli(args, env) {
+  return spawn(process.execPath, [cliPath, ...args], {
+    env: { ...process.env, ...(env ?? {}) },
+    stdio: 'ignore',
+  });
 }
 
 const CASES = {
@@ -543,14 +569,18 @@ const CASES = {
     assert(listed.auditPath.includes('audit'), 'audit list 未返回 auditPath');
     const write = listed.records.find((record) => record.action === 'write-ok');
     assert(write, 'audit list 缺少成功写入记录 write-ok');
-    assert(write.onChain === true, '成功写入记录不在哈希链上');
     assert(write.beforeSha256 && write.afterSha256, '写入记录缺少前后内容哈希');
+    assert(write.onChain === undefined && write.recordHash === undefined, '审计不应再输出链字段');
 
     const shown = ctx.runJson(['audit', 'show', String(write.id), ...dataOnly(ctx), '--json']);
-    assert(shown.action === 'write-ok' && shown.onChain === true, 'audit show 字段不符');
+    assert(shown.action === 'write-ok', 'audit show 字段不符');
 
     const verified = ctx.runJson(['audit', 'verify', ...dataOnly(ctx), '--json']);
     assert(verified.ok === true, `audit verify 应为 ok，实际 ${JSON.stringify(verified.issues)}`);
+    assert(verified.total >= 1, 'audit verify 未统计到记录');
+    assert(verified.chain === undefined, 'audit verify 不应再返回链状态');
+
+    await assertNoSidecar(join(ctx.dataDir, 'audit.log.chain.json'));
 
     const exported = ctx.run(['audit', 'export', '--format', 'ndjson', ...dataOnly(ctx)]);
     assert(exported.stdout.trim().split('\n').length >= 1, 'audit export --format ndjson 输出为空');
@@ -567,6 +597,30 @@ const CASES = {
 
     ctx.run(['audit', 'list', '--result', 'bogus', ...dataOnly(ctx)], { expect: 2 });
     ctx.run(['audit', 'show', '999999', ...dataOnly(ctx)], { expect: 2 });
+
+    // 旧格式（带链字段）记录仍可读；格式损坏行让 verify 非零退出。
+    const auditPath = join(ctx.dataDir, 'audit.log');
+    await writeFile(
+      auditPath,
+      `${JSON.stringify({
+        id: 'legacy-1',
+        seq: 1,
+        at: '2026-10-01T00:00:00.000Z',
+        action: 'verify-ok',
+        ok: true,
+        hostsPath: ctx.hostsPath,
+        prevHash: 'GENESIS',
+        recordHash: 'sha256:deadbeef',
+        onChain: true,
+      })}\n${await readFile(auditPath, 'utf8')}`,
+    );
+    const legacy = ctx.runJson(['audit', 'list', ...dataOnly(ctx), '--json']);
+    assert(
+      legacy.records.some((record) => record.id === 'legacy-1'),
+      '旧格式审计记录应继续可读',
+    );
+    await writeFile(auditPath, `${await readFile(auditPath, 'utf8')}not-json\n`);
+    ctx.run(['audit', 'verify', ...dataOnly(ctx)], { expect: 1 });
   },
 
   async undo(ctx) {
@@ -649,6 +703,87 @@ const CASES = {
 
     const gc = ctx.runJson(['run', 'gc', ...workspace(ctx), '--json']);
     assert(Array.isArray(gc.removed) && gc.removed.length === 0, '空环境 run gc 不应回收任何会话');
+
+    // 真实孤儿：父进程被 SIGKILL 留下租约，`--file/--data-dir` 必须由子命令生效。
+    const defaultData = join(ctx.root, 'default-data');
+    const defaultHosts = join(ctx.root, 'default-hosts');
+    const customHosts = join(ctx.root, 'custom-hosts');
+    const customData = join(ctx.root, 'custom-data');
+    await mkdir(defaultData, { recursive: true });
+    await mkdir(customData, { recursive: true });
+    await writeFile(defaultHosts, baseHosts());
+    await writeFile(
+      join(defaultData, 'config.json'),
+      JSON.stringify({ schemaVersion: 1, hostsPath: defaultHosts }),
+    );
+    await writeFile(customHosts, baseHosts());
+    const defaultBefore = await readFile(defaultHosts, 'utf8');
+
+    const child = spawnCli(
+      [
+        'run',
+        '--host',
+        'orphan.example.com',
+        '--ip',
+        '10.0.0.88',
+        '--file',
+        customHosts,
+        '--data-dir',
+        customData,
+        '--',
+        process.execPath,
+        '-e',
+        'setTimeout(() => {}, 8000)',
+      ],
+      { HOSSCLI_HOME: defaultData },
+    );
+
+    const statePath = join(customData, 'state.json');
+    await waitFor(async () => {
+      try {
+        const state = JSON.parse(await readFile(statePath, 'utf8'));
+        return Array.isArray(state.sessions) && state.sessions.length > 0;
+      } catch {
+        return false;
+      }
+    }, 'run 会话租约写入自定义数据目录');
+    assert(
+      (await readFile(customHosts, 'utf8')).includes('orphan.example.com'),
+      '孤儿会话的临时条目应写入自定义 hosts',
+    );
+
+    child.kill('SIGKILL');
+    await new Promise((resolve) => child.once('exit', resolve));
+
+    const orphanList = ctx.runJson(
+      ['run', 'list', '--file', customHosts, '--data-dir', customData, '--json'],
+      {
+        env: { HOSSCLI_HOME: defaultData },
+      },
+    );
+    assert(
+      orphanList.sessions.some((session) => session.orphan),
+      'run list 未识别出孤儿会话',
+    );
+
+    const orphanGc = ctx.runJson(
+      ['run', 'gc', '--file', customHosts, '--data-dir', customData, '--json'],
+      {
+        env: { HOSSCLI_HOME: defaultData },
+      },
+    );
+    assert(
+      orphanGc.removed.length === 1,
+      `run gc 应回收 1 个孤儿，实际 ${orphanGc.removed.length}`,
+    );
+    assert(
+      !(await readFile(customHosts, 'utf8')).includes('orphan.example.com'),
+      'run gc 未从自定义 hosts 移除孤儿条目',
+    );
+    assert(
+      (await readFile(defaultHosts, 'utf8')) === defaultBefore,
+      'run gc 改动了默认配置指向的 hosts（--file 被子命令吞噬）',
+    );
   },
 
   async completion(ctx) {
