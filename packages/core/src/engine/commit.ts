@@ -391,7 +391,14 @@ export async function commitPlan(
             : '写入后回读内容与预期不一致，且文件已被其他进程修改，已跳过回滚。',
         },
         { keep: workspace.config.defaults.auditKeep },
-      ).catch(() => undefined);
+      ).catch(async (error) => {
+        await recordAuditFailure(workspace.dataDir, {
+          at: workspace.now.toISOString(),
+          command: resolveCommand(options),
+          detail: `write-rollback: ${String(error)}`,
+        });
+        warnings.push('写入回滚事件未能写入审计，已记录为未审计操作。');
+      });
       if (!rolledBack) {
         warnings.push('检测到 hosts 已被其他进程修改，未执行自动回滚，以免覆盖他人改动。');
       }
@@ -474,7 +481,14 @@ export async function commitPlan(
             : '写入后解析验证失败，但文件已被其他进程修改，已跳过回滚。',
         },
         { keep: workspace.config.defaults.auditKeep },
-      ).catch(() => undefined);
+      ).catch(async (error) => {
+        await recordAuditFailure(workspace.dataDir, {
+          at: workspace.now.toISOString(),
+          command: resolveCommand(options),
+          detail: `verify-rollback: ${String(error)}`,
+        });
+        warnings.push('解析验证回滚事件未能写入审计，已记录为未审计操作。');
+      });
       if (!rolledBack) {
         warnings.push('检测到 hosts 已被其他进程修改，未执行自动回滚，以免覆盖他人改动。');
       }
@@ -514,7 +528,14 @@ export async function commitPlan(
         checked: verification.checked,
       },
       { keep: workspace.config.defaults.auditKeep },
-    ).catch(() => undefined);
+    ).catch(async (error) => {
+      await recordAuditFailure(workspace.dataDir, {
+        at: workspace.now.toISOString(),
+        command: resolveCommand(options),
+        detail: `verify-ok: ${String(error)}`,
+      });
+      warnings.push('解析验证通过的审计写入失败，已记录为未审计操作。');
+    });
   }
 
   if (plan.changed) {
@@ -567,7 +588,14 @@ export async function commitPlan(
             : '持久化方案/状态失败，但 hosts 已被其他进程修改，已跳过回滚。',
         },
         { keep: workspace.config.defaults.auditKeep },
-      ).catch(() => undefined);
+      ).catch(async (error) => {
+        await recordAuditFailure(workspace.dataDir, {
+          at: workspace.now.toISOString(),
+          command: resolveCommand(options),
+          detail: `write-rollback: ${String(error)}`,
+        });
+        warnings.push('持久化失败的审计事件未能写入审计，已记录为未审计操作。');
+      });
       warnings.push(
         rolledBack
           ? '持久化方案/状态失败，已尝试回滚 hosts 文件。'

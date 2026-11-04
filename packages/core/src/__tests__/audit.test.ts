@@ -13,8 +13,8 @@ import {
 } from '../index';
 import { makeEnv } from './batch1-helpers';
 
-describe('审计：写入留痕与哈希链', () => {
-  it('成功写入记录 write-ok、前后哈希、操作者与条目摘要，链校验通过', async () => {
+describe('审计：结构化写入记录与一致性检查', () => {
+  it('成功写入记录 write-ok、前后哈希、操作者与条目摘要，一致性检查通过', async () => {
     const env = await makeEnv();
     try {
       await addHosts({ ...env.options(), ip: '10.0.0.13', hostnames: ['audit.example.com'] });
@@ -37,44 +37,13 @@ describe('审计：写入留痕与哈希链', () => {
       }
       const verification = await verifyAudit(auditPath);
       expect(verification.ok).toBe(true);
-      expect(verification.chained).toBeGreaterThan(0);
+      expect(verification.total).toBeGreaterThan(0);
     } finally {
       await env.cleanup();
     }
   });
 
-  it('篡改任一条记录内容会被 verify 发现', async () => {
-    const env = await makeEnv();
-    try {
-      const auditPath = join(env.dataDir, 'audit.log');
-      await appendAudit(auditPath, {
-        at: '2026-11-02T00:00:00.000Z',
-        action: 'verify-ok',
-        ok: true,
-        hostsPath: env.hostsPath,
-        checked: 1,
-      });
-      await appendAudit(auditPath, {
-        at: '2026-11-02T00:01:00.000Z',
-        action: 'verify-ok',
-        ok: true,
-        hostsPath: env.hostsPath,
-        checked: 2,
-      });
-
-      const raw = await readFile(auditPath, 'utf8');
-      await writeFile(auditPath, raw.replace('"checked":1', '"checked":9'));
-
-      const verification = await verifyAudit(auditPath);
-      expect(verification.ok).toBe(false);
-      expect(verification.issues[0]?.reason).toContain('哈希不匹配');
-      expect(verification.issues[0]?.id).toBe('1');
-    } finally {
-      await env.cleanup();
-    }
-  });
-
-  it('旧格式记录可读但标记为不在链上；尾部截断可被发现', async () => {
+  it('旧带链字段记录仍可读取、查询与导出，链字段被忽略', async () => {
     const env = await makeEnv();
     try {
       const auditPath = join(env.dataDir, 'audit.log');
@@ -82,10 +51,15 @@ describe('审计：写入留痕与哈希链', () => {
       await writeFile(
         auditPath,
         `${JSON.stringify({
+          id: '1',
+          seq: 1,
           at: '2026-10-01T00:00:00.000Z',
           action: 'verify-ok',
           ok: true,
           hostsPath: env.hostsPath,
+          prevHash: 'GENESIS',
+          recordHash: 'sha256:deadbeef',
+          onChain: true,
         })}\n`,
       );
       await appendAudit(auditPath, {
@@ -95,28 +69,75 @@ describe('审计：写入留痕与哈希链', () => {
         hostsPath: env.hostsPath,
       });
 
+      const entries = await readAudit(auditPath, 10);
+      expect(entries.map((entry) => entry.id)).toEqual(['1', '2']);
+      expect(entries[0]).not.toHaveProperty('recordHash');
+      expect(entries[0]).not.toHaveProperty('onChain');
+
+      const shown = await showAudit(auditPath, '1');
+      expect(shown?.action).toBe('verify-ok');
+      const exported = await exportAudit(auditPath, 'json');
+      expect(exported.count).toBe(2);
+
       const verification = await verifyAudit(auditPath);
-      expect(verification.legacy).toBe(1);
-      expect(verification.chained).toBe(1);
       expect(verification.ok).toBe(true);
-
-      const legacy = await showAudit(auditPath, 'legacy-1');
-      expect(legacy?.onChain).toBe(false);
-      expect(legacy?.legacy).toBe(true);
-
-      // 删掉最后一条链上记录后，sidecar 仍记录原 seq，可发现尾部被截断。
-      const raw = await readFile(auditPath, 'utf8');
-      const lines = raw.trim().split('\n');
-      await writeFile(auditPath, `${lines.slice(0, -1).join('\n')}\n`);
-      const truncated = await verifyAudit(auditPath);
-      expect(truncated.ok).toBe(false);
-      expect(truncated.issues.some((issue) => /尾部|被删除/.test(issue.reason))).toBe(true);
     } finally {
       await env.cleanup();
     }
   });
 
-  it('--keep 轮转后链仍然自洽，seq 继续递增', async () => {
+  it('删除旧链 sidecar 不影响任何命令', async () => {
+    const env = await makeEnv();
+    try {
+      const auditPath = join(env.dataDir, 'audit.log');
+      await mkdir(env.dataDir, { recursive: true });
+      await writeFile(
+        `${auditPath}.chain.json`,
+        JSON.stringify({ seq: 2, lastHash: 'sha256:old', baseHash: 'GENESIS' }),
+      );
+      await appendAudit(auditPath, {
+        at: '2026-11-02T00:00:00.000Z',
+        action: 'write-ok',
+        ok: true,
+        hostsPath: env.hostsPath,
+      });
+
+      await expect(readFile(`${auditPath}.chain.json`)).rejects.toMatchObject({ code: 'ENOENT' });
+      const entries = await readAudit(auditPath, 10);
+      expect(entries).toHaveLength(1);
+      expect((await verifyAudit(auditPath)).ok).toBe(true);
+    } finally {
+      await env.cleanup();
+    }
+  });
+
+  it('格式损坏的行会让 verify 报告不一致', async () => {
+    const env = await makeEnv();
+    try {
+      const auditPath = join(env.dataDir, 'audit.log');
+      await mkdir(env.dataDir, { recursive: true });
+      await writeFile(
+        auditPath,
+        `${JSON.stringify({
+          id: '1',
+          at: '2026-11-02T00:00:00.000Z',
+          action: 'write-ok',
+          ok: true,
+          hostsPath: env.hostsPath,
+        })}\nnot-json\n`,
+      );
+
+      const verification = await verifyAudit(auditPath);
+      expect(verification.ok).toBe(false);
+      expect(verification.invalidLines).toBe(1);
+      expect(verification.issues[0]?.id).toBe('format');
+    } finally {
+      await env.cleanup();
+    }
+    // 注意：审计不再承诺检测内容篡改；能写 dataDir 的同一用户也能改写 audit.log。
+  });
+
+  it('--keep 轮转后记录仍自洽，ID 继续递增', async () => {
     const env = await makeEnv();
     try {
       const auditPath = join(env.dataDir, 'audit.log');
@@ -135,9 +156,9 @@ describe('审计：写入留痕与哈希链', () => {
       }
       const entries = await readAudit(auditPath, 10);
       expect(entries).toHaveLength(2);
+      expect(entries.map((entry) => entry.id)).toEqual(['3', '4']);
       const verification = await verifyAudit(auditPath);
       expect(verification.ok).toBe(true);
-      expect(verification.chain.seq).toBe(4);
     } finally {
       await env.cleanup();
     }
@@ -189,6 +210,33 @@ describe('审计：写入留痕与哈希链', () => {
           until: '2026-11-01T00:00:00.000Z',
         }),
       ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    } finally {
+      await env.cleanup();
+    }
+  });
+
+  it('verify-ok 审计写入失败不再被静默吞掉，记录为未审计', async () => {
+    const env = await makeEnv();
+    try {
+      // audit.log 是目录：所有审计写入都会失败。
+      await mkdir(join(env.dataDir, 'audit.log'), { recursive: true });
+      const result = await addHosts({
+        ...env.options(),
+        ip: '10.0.0.15',
+        hostnames: ['verified.example.com'],
+        verify: true,
+        verifyLookup: async (hostname: string) => [
+          { address: hostname === 'verified.example.com' ? '10.0.0.15' : '10.0.0.12', family: 4 },
+        ],
+      });
+      expect(result.changed).toBe(true);
+      expect(await readFile(env.hostsPath, 'utf8')).toContain('verified.example.com');
+
+      const failures = await readAuditFailures(env.dataDir);
+      expect(failures.some((failure) => failure.detail?.includes('verify-ok'))).toBe(true);
+      expect(
+        result.warnings.some((warning) => warning.includes('解析验证通过的审计写入失败')),
+      ).toBe(true);
     } finally {
       await env.cleanup();
     }

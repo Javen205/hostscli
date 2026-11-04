@@ -143,14 +143,7 @@ async function ensureRepo(options: GitOptions): Promise<void> {
   // audit / cache / backups 体积大或含运行态，不进入快照。
   await writeFile(
     join(gitDir, 'info', 'exclude'),
-    [
-      'audit.log',
-      'audit.log.chain.json',
-      'audit-unaudited.jsonl',
-      'cache/',
-      'backups/',
-      'history/',
-    ].join('\n') + '\n',
+    ['audit.log', 'audit-unaudited.jsonl', 'cache/', 'backups/', 'history/'].join('\n') + '\n',
     { mode: 0o600 },
   );
 }
@@ -456,7 +449,11 @@ export async function gitRollback(options: GitRollbackOptions): Promise<GitRollb
 
     // config / state / profiles 已被覆盖，必须重新从磁盘读取，不能复用内存里的旧状态。
     const previousConfig = workspace.config;
-    const config = await loadConfig(workspace.paths.configPath, workspace.env);
+    const config = await loadConfig(workspace.paths.configPath, workspace.env, {
+      ...(workspace.options.onWarning !== undefined
+        ? { onWarning: workspace.options.onWarning }
+        : {}),
+    });
     const nextPaths = resolveDataPaths({
       dataDir: workspace.dataDir,
       env: workspace.env,
@@ -489,7 +486,15 @@ export async function gitRollback(options: GitRollbackOptions): Promise<GitRollb
       const plan = buildRenderPlan(workspace, loaded, profiles, {
         appendIfMissing: loaded.document.managedRange !== null || profiles.length > 0,
       });
-      mutation = await commitPlan(workspace, plan, { persistState: true, warnings });
+      try {
+        mutation = await commitPlan(workspace, plan, { persistState: true, warnings });
+      } catch (error) {
+        throw new HostsCliError(
+          'CONFLICT',
+          `数据目录已回滚到 ${commitHash.slice(0, 7)}，但 hosts 重建失败：${String(error)}。` +
+            '请先确认 hosts 当前内容，再执行 hostscli apply 重建以恢复一致性。',
+        );
+      }
     }
 
     return {

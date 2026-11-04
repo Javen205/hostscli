@@ -37,7 +37,7 @@ export async function exportSnapshot(options: WorkspaceOptions = {}): Promise<Ex
       profiles: await readProfiles(workspace.paths.profilesDir),
     };
     // export 不修改受管状态（hosts/state/profiles）；写入的文件由用户通过 --out 指定，
-    // 可能不在数据目录内，因此只记运行日志，不进审计哈希链（理由见 docs/pages/cli-reference.md）。
+    // 可能不在数据目录内，因此只记运行日志，不进审计（理由见 docs/pages/cli-reference.md）。
     await logRuntime(workspace, {
       event: 'export',
       detail: '导出数据快照（除运行日志外不修改数据目录）。',

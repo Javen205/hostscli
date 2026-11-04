@@ -1,6 +1,12 @@
 import type { Command } from 'commander';
 import pc from 'picocolors';
-import { addDataDirOption, printJson, printWarnings, workspaceOptions } from './common';
+import {
+  addDataDirOption,
+  addWorkspaceOptions,
+  printJson,
+  printWarnings,
+  workspaceOptions,
+} from './common';
 
 export function registerGitCommand(program: Command): void {
   const git = program.command('git').description('数据目录快照（独立 git 仓库，不触碰系统 hosts）');
@@ -94,7 +100,7 @@ export function registerGitCommand(program: Command): void {
       process.stdout.write(result.diff || pc.dim('没有差异。\n'));
     });
 
-  addDataDirOption(
+  addWorkspaceOptions(
     git.command('rollback <rev>').description('恢复数据目录并重建 hosts（默认重建）'),
     { json: true },
   )
@@ -102,7 +108,7 @@ export function registerGitCommand(program: Command): void {
     .action(async (rev: string, options) => {
       const { gitRollback } = await import('@hostscli/core/git');
       const result = await gitRollback({
-        ...workspaceOptions({ dataDir: options.dataDir }),
+        ...workspaceOptions(options),
         rev,
         rebuild: options.rebuild !== false,
       });

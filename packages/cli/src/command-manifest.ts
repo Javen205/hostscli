@@ -114,7 +114,7 @@ export const COMMAND_ENTRIES: CommandEntry[] = [
   },
   {
     name: 'audit',
-    description: '写入审计：哈希链校验、查询、导出',
+    description: '写入审计：一致性检查、查询、导出',
     register: async (program) => (await import('./commands/audit')).registerAuditCommand(program),
   },
   {

@@ -15,7 +15,7 @@ export interface RuntimeLogEntry {
   detail?: string;
 }
 
-/** 运行日志与审计分离：审计是不可篡改的写操作凭据，运行日志只用于排障。 */
+/** 运行日志与审计分离：审计记录写操作事实，运行日志只用于排障。 */
 export function runtimeLogPathFor(dataDir: string): string {
   return join(dataDir, 'logs', 'run.jsonl');
 }

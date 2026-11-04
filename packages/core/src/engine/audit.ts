@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { appendFile, chmod, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, readFile, unlink } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { InvalidInputError } from '../errors';
@@ -51,30 +50,16 @@ export interface AuditEntry {
 
 export interface AuditRecord extends AuditEntry {
   id: string;
-  seq: number | null;
-  prevHash: string | null;
-  recordHash: string | null;
-  onChain: boolean;
-  legacy: boolean;
 }
 
-export interface AuditChainState {
-  seq: number;
-  lastHash: string;
-  baseHash: string;
-  rotatedAt?: string;
-}
-
-const GENESIS = 'GENESIS';
 const MAX_DETAIL_LENGTH = 500;
 const MAX_LIMIT = 1000;
 
+/** 旧版本写下的哈希链字段；读取时忽略，保证历史记录继续可读。 */
+const LEGACY_CHAIN_FIELDS = ['seq', 'prevHash', 'recordHash', 'baseHash', 'onChain'] as const;
+
 function truncate(value: string): string {
   return value.length <= MAX_DETAIL_LENGTH ? value : `${value.slice(0, MAX_DETAIL_LENGTH)}…`;
-}
-
-function sha256(text: string): string {
-  return `sha256:${createHash('sha256').update(text).digest('hex')}`;
 }
 
 function chainPathFor(auditPath: string): string {
@@ -104,6 +89,12 @@ interface ParsedAudit {
   invalidLines: number;
 }
 
+function stripLegacyFields(value: Record<string, unknown>): Record<string, unknown> {
+  const copy = { ...value };
+  for (const field of LEGACY_CHAIN_FIELDS) delete copy[field];
+  return copy;
+}
+
 async function parseAuditFile(path: string): Promise<ParsedAudit> {
   let raw: string;
   try {
@@ -115,31 +106,20 @@ async function parseAuditFile(path: string): Promise<ParsedAudit> {
 
   const records: AuditRecord[] = [];
   let invalidLines = 0;
-  let legacyIndex = 0;
+  let missingIdIndex = 0;
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
-      const parsed = JSON.parse(line) as AuditEntry & {
-        id?: unknown;
-        seq?: unknown;
-        prevHash?: unknown;
-        recordHash?: unknown;
-      };
+      const parsed = JSON.parse(line) as Record<string, unknown>;
       if (typeof parsed.at !== 'string' || typeof parsed.action !== 'string') {
         invalidLines += 1;
         continue;
       }
-      const onChain = typeof parsed.recordHash === 'string' && typeof parsed.prevHash === 'string';
-      legacyIndex += onChain ? 0 : 1;
-      records.push({
-        ...parsed,
-        id: typeof parsed.id === 'string' ? parsed.id : `legacy-${legacyIndex}`,
-        seq: typeof parsed.seq === 'number' ? parsed.seq : null,
-        prevHash: typeof parsed.prevHash === 'string' ? parsed.prevHash : null,
-        recordHash: typeof parsed.recordHash === 'string' ? parsed.recordHash : null,
-        onChain,
-        legacy: !onChain,
-      });
+      const id =
+        typeof parsed.id === 'string'
+          ? parsed.id
+          : ((missingIdIndex += 1), `legacy-${missingIdIndex}`);
+      records.push({ ...stripLegacyFields(parsed), id } as AuditRecord);
     } catch {
       invalidLines += 1;
     }
@@ -147,42 +127,22 @@ async function parseAuditFile(path: string): Promise<ParsedAudit> {
   return { records, invalidLines };
 }
 
-async function readChainState(path: string): Promise<AuditChainState | null> {
-  try {
-    const parsed = JSON.parse(
-      await readFile(chainPathFor(path), 'utf8'),
-    ) as Partial<AuditChainState>;
-    if (
-      typeof parsed.seq === 'number' &&
-      typeof parsed.lastHash === 'string' &&
-      typeof parsed.baseHash === 'string'
-    ) {
-      return {
-        seq: parsed.seq,
-        lastHash: parsed.lastHash,
-        baseHash: parsed.baseHash,
-        ...(typeof parsed.rotatedAt === 'string' ? { rotatedAt: parsed.rotatedAt } : {}),
-      };
+function nextId(records: AuditRecord[]): string {
+  let highest = 0;
+  for (const record of records) {
+    if (/^\d+$/.test(record.id)) {
+      highest = Math.max(highest, Number(record.id));
     }
-    return null;
-  } catch {
-    return null;
   }
-}
-
-async function writeChainState(path: string, state: AuditChainState): Promise<void> {
-  await mkdir(dirname(chainPathFor(path)), { recursive: true, mode: 0o700 });
-  await atomicWriteFile(chainPathFor(path), Buffer.from(`${JSON.stringify(state)}\n`), {
-    mode: 0o600,
-  });
+  return String(highest + 1);
 }
 
 /**
- * 追加审计日志（JSONL，0600），并维护哈希链。
+ * 追加审计记录（append-only JSONL，0600）。
  *
- * 每条链上记录包含 `prevHash`（上一条记录的 recordHash）与 `recordHash`
- * （本条内容去掉 recordHash 后的 sha256）。旧格式记录（无哈希字段）保持可读，
- * 但 `onChain=false`，校验时如实标注，绝不伪造链完整性。
+ * 审计只保证"写入记录可读、可查询、按条数轮转"，不提供防篡改能力：
+ * 任何能写 `dataDir` 的用户都能同样改写 `audit.log`，无密钥哈希链挡不住。
+ * 因此这里不做链式计算，只维护单调递增的 `id` 与时间戳。
  */
 export async function appendAudit(
   path: string,
@@ -190,67 +150,42 @@ export async function appendAudit(
   options: { keep?: number } = {},
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const { records } = await parseAuditFile(path);
-  const chained = records.filter((record) => record.onChain);
-  const sidecar = await readChainState(path);
-  const lastChained = chained.at(-1);
-  const prevSeq = Math.max(sidecar?.seq ?? 0, lastChained?.seq ?? 0);
-  const prevHash = lastChained?.recordHash ?? sidecar?.lastHash ?? GENESIS;
-  const seq = prevSeq + 1;
+  // 旧版本的链状态文件已无用途；首次写入时尽力删除，删除失败不影响审计。
+  await unlink(chainPathFor(path)).catch(() => undefined);
 
-  const base: Record<string, unknown> = {
-    id: String(seq),
-    seq,
+  const { records } = await parseAuditFile(path);
+  const record: Record<string, unknown> = {
+    id: nextId(records),
     at: entry.at,
     action: entry.action,
     ok: entry.ok,
     hostsPath: entry.hostsPath,
   };
-  if (entry.planHash !== undefined) base.planHash = entry.planHash;
-  if (entry.command !== undefined) base.command = entry.command;
-  if (entry.commandArgs !== undefined) base.commandArgs = entry.commandArgs;
-  if (entry.operator !== undefined) base.operator = entry.operator;
-  if (entry.beforeSha256 !== undefined) base.beforeSha256 = entry.beforeSha256;
-  if (entry.afterSha256 !== undefined) base.afterSha256 = entry.afterSha256;
-  if (entry.summary !== undefined) base.summary = entry.summary;
-  if (entry.changed !== undefined) base.changed = entry.changed;
-  if (entry.checked !== undefined) base.checked = entry.checked;
-  if (entry.failures !== undefined) base.failures = entry.failures;
-  if (entry.detail !== undefined) base.detail = truncate(entry.detail);
-  base.prevHash = prevHash;
+  if (entry.planHash !== undefined) record.planHash = entry.planHash;
+  if (entry.command !== undefined) record.command = entry.command;
+  if (entry.commandArgs !== undefined) record.commandArgs = entry.commandArgs;
+  if (entry.operator !== undefined) record.operator = entry.operator;
+  if (entry.beforeSha256 !== undefined) record.beforeSha256 = entry.beforeSha256;
+  if (entry.afterSha256 !== undefined) record.afterSha256 = entry.afterSha256;
+  if (entry.summary !== undefined) record.summary = entry.summary;
+  if (entry.changed !== undefined) record.changed = entry.changed;
+  if (entry.checked !== undefined) record.checked = entry.checked;
+  if (entry.failures !== undefined) record.failures = entry.failures;
+  if (entry.detail !== undefined) record.detail = truncate(entry.detail);
 
-  const record = { ...base, recordHash: sha256(JSON.stringify(base)) };
   await appendFile(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
   await chmod(path, 0o600).catch(() => undefined);
 
   const keep = options.keep ?? 0;
-  if (keep > 0) {
-    const all = await parseAuditFile(path);
-    if (all.records.length > keep) {
-      const kept = all.records.slice(all.records.length - keep);
-      const text = kept.map((item) => `${JSON.stringify(item)}\n`).join('');
-      await atomicWriteFile(path, Buffer.from(text), { mode: 0o600 });
-      const firstKept = kept[0];
-      const lastKept = kept.at(-1);
-      await writeChainState(path, {
-        seq: lastKept?.seq ?? 0,
-        lastHash: lastKept?.recordHash ?? GENESIS,
-        baseHash: firstKept?.prevHash ?? GENESIS,
-        rotatedAt: entry.at,
-      });
-      return;
-    }
+  if (keep > 0 && records.length + 1 > keep) {
+    const kept = [...records, record as unknown as AuditRecord].slice(-keep);
+    const text = kept.map((item) => `${JSON.stringify(item)}\n`).join('');
+    await atomicWriteFile(path, Buffer.from(text), { mode: 0o600 });
   }
-
-  await writeChainState(path, {
-    seq,
-    lastHash: record.recordHash,
-    baseHash: sidecar?.baseHash ?? GENESIS,
-  });
 }
 
-/** 兼容旧接口：读取最近 N 条记录（含链字段）。 */
-export async function readAudit(path: string, limit = 20): Promise<AuditEntry[]> {
+/** 兼容旧接口：读取最近 N 条记录。 */
+export async function readAudit(path: string, limit = 20): Promise<AuditRecord[]> {
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
     throw new InvalidInputError('audit limit 必须是 1–1000 的整数。');
   }
@@ -278,7 +213,6 @@ function parseTime(value: string, label: string): number {
 export interface AuditQueryResult {
   records: AuditRecord[];
   total: number;
-  legacy: number;
   invalidLines: number;
   unaudited: AuditUnauditedRecord[];
 }
@@ -311,7 +245,6 @@ export async function queryAudit(path: string, query: AuditQuery = {}): Promise<
   return {
     records: matched.slice(-limit),
     total: parsed.records.length,
-    legacy: parsed.records.filter((record) => record.legacy).length,
     invalidLines: parsed.invalidLines,
     unaudited: await readAuditFailures(dirname(path)),
   };
@@ -326,66 +259,46 @@ export interface AuditVerifyResult {
   ok: boolean;
   auditPath: string;
   total: number;
-  chained: number;
-  legacy: number;
+  invalidLines: number;
   issues: AuditVerifyIssue[];
   unaudited: AuditUnauditedRecord[];
-  chain: {
-    seq: number | null;
-    lastHash: string | null;
-    baseHash: string | null;
-    /** 没有 sidecar 时无法校验"尾部是否被截断"。 */
-    tailVerified: boolean;
-  };
 }
 
 /**
- * 校验哈希链：
- * - 每条链上记录的内容哈希与 prevHash 是否一致；
- * - 最后一条与 sidecar 的 seq/lastHash 是否一致（检测尾部删除）；
- * - 旧格式记录不计入链，只统计数量。
+ * 一致性检查（不是篡改检测）：
+ * - 文件可读、每行都可解析为合法记录；
+ * - 时间戳单调不倒退；
+ * - 数字 ID 单调递增（轮转后仍从保留记录继续）。
+ *
+ * 明确不检查：内容是否被同一用户改写、尾部是否被删除。审计仅提供写入记录，
+ * 不承诺防篡改。
  */
 export async function verifyAudit(path: string): Promise<AuditVerifyResult> {
-  const { records } = await parseAuditFile(path);
-  const chained = records.filter((record) => record.onChain);
-  const sidecar = await readChainState(path);
+  const { records, invalidLines } = await parseAuditFile(path);
   const issues: AuditVerifyIssue[] = [];
-  const baseHash = sidecar?.baseHash ?? chained[0]?.prevHash ?? null;
-  let previousHash: string | null = null;
-
-  for (const record of chained) {
-    const base = { ...record };
-    delete (base as Partial<AuditRecord>).recordHash;
-    delete (base as Partial<AuditRecord>).onChain;
-    delete (base as Partial<AuditRecord>).legacy;
-    const expected = sha256(JSON.stringify(base));
-    if (record.recordHash !== expected) {
-      issues.push({ id: record.id, reason: '记录内容被修改（哈希不匹配）' });
-    }
-    if (previousHash === null) {
-      if (sidecar !== null && record.prevHash !== sidecar.baseHash) {
-        issues.push({ id: record.id, reason: '链头 prevHash 与 sidecar 不一致' });
-      }
-    } else if (record.prevHash !== previousHash) {
-      issues.push({ id: record.id, reason: '与上一条记录不连续（可能被删除）' });
-    }
-    previousHash = record.recordHash;
+  if (invalidLines > 0) {
+    issues.push({ id: 'format', reason: `有 ${invalidLines} 行不是合法的审计记录` });
   }
 
-  const lastChained = chained.at(-1);
-  if (sidecar !== null) {
-    if (lastChained === undefined) {
-      if (sidecar.seq > 0) {
-        issues.push({
-          id: 'chain',
-          reason: `审计文件为空，但 sidecar 记录 seq=${sidecar.seq}（记录被删除）`,
-        });
+  let previousAt: number | null = null;
+  let previousNumericId = 0;
+  for (const record of records) {
+    const at = Date.parse(record.at);
+    if (Number.isNaN(at)) {
+      issues.push({ id: record.id, reason: '时间戳不可解析' });
+    } else if (previousAt !== null && at < previousAt) {
+      issues.push({ id: record.id, reason: '时间戳早于上一条记录（记录顺序不单调）' });
+    } else {
+      previousAt = at;
+    }
+
+    if (/^\d+$/.test(record.id)) {
+      const numericId = Number(record.id);
+      if (numericId <= previousNumericId) {
+        issues.push({ id: record.id, reason: '数字 ID 未递增（可能重复或轮转后错位）' });
+      } else {
+        previousNumericId = numericId;
       }
-    } else if (lastChained.seq !== sidecar.seq || lastChained.recordHash !== sidecar.lastHash) {
-      issues.push({
-        id: lastChained.id,
-        reason: `尾部记录缺失或被截断（sidecar seq=${sidecar.seq}，实际 seq=${lastChained.seq ?? '?'}）`,
-      });
     }
   }
 
@@ -393,16 +306,9 @@ export async function verifyAudit(path: string): Promise<AuditVerifyResult> {
     ok: issues.length === 0,
     auditPath: path,
     total: records.length,
-    chained: chained.length,
-    legacy: records.length - chained.length,
+    invalidLines,
     issues,
     unaudited: await readAuditFailures(dirname(path)),
-    chain: {
-      seq: lastChained?.seq ?? null,
-      lastHash: lastChained?.recordHash ?? null,
-      baseHash,
-      tailVerified: sidecar !== null,
-    },
   };
 }
 
@@ -472,15 +378,15 @@ export async function readAuditFailures(dataDir: string): Promise<AuditUnaudited
 /** 只读健康摘要，供 `audit list` 一并展示。 */
 export async function auditHealth(path: string): Promise<{
   total: number;
-  legacy: number;
+  invalidLines: number;
   unaudited: AuditUnauditedRecord[];
-  chainOk: boolean;
+  ok: boolean;
 }> {
   const verification = await verifyAudit(path);
   return {
     total: verification.total,
-    legacy: verification.legacy,
+    invalidLines: verification.invalidLines,
     unaudited: verification.unaudited,
-    chainOk: verification.ok,
+    ok: verification.ok,
   };
 }

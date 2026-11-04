@@ -46,7 +46,7 @@ function formatEntry(entry: {
 }
 
 export function registerAuditCommand(program: Command): void {
-  const audit = program.command('audit').description('写入审计：哈希链校验、查询、导出');
+  const audit = program.command('audit').description('写入审计：一致性检查、查询、导出');
 
   addDataDirOption(audit.command('list').description('列出审计记录（支持时间/命令/结果过滤）'), {
     json: true,
@@ -93,8 +93,8 @@ export function registerAuditCommand(program: Command): void {
       for (const entry of result.records) {
         process.stdout.write(formatEntry(entry));
       }
-      if (result.legacy > 0) {
-        process.stdout.write(pc.dim(`其中 ${result.legacy} 条为旧格式记录（不在哈希链上）。\n`));
+      if (result.invalidLines > 0) {
+        process.stdout.write(pc.red(`有 ${result.invalidLines} 行不是合法的审计记录。\n`));
       }
     });
 
@@ -117,16 +117,14 @@ export function registerAuditCommand(program: Command): void {
         return;
       }
       process.stdout.write(formatEntry(entry));
-      process.stdout.write(
-        pc.dim(
-          `链：${entry.onChain ? '在链上' : '旧格式，不在链上'} prev=${entry.prevHash ?? '-'} hash=${entry.recordHash ?? '-'}\n`,
-        ),
-      );
     });
 
-  addDataDirOption(audit.command('verify').description('校验哈希链，发现被删改的记录'), {
-    json: true,
-  }).action(async (options: { dataDir?: string; json?: boolean }) => {
+  addDataDirOption(
+    audit
+      .command('verify')
+      .description('一致性检查：文件可读、每行可解析、时间与 ID 单调（不检测篡改）'),
+    { json: true },
+  ).action(async (options: { dataDir?: string; json?: boolean }) => {
     const [{ verifyAudit }, { resolveDataPaths }] = await Promise.all([
       import('@hostscli/core/audit'),
       import('@hostscli/core/storage'),
@@ -137,14 +135,11 @@ export function registerAuditCommand(program: Command): void {
       printJson(result);
     } else {
       process.stdout.write(
-        `审计记录 ${result.total} 条：链上 ${result.chained}，旧格式 ${result.legacy}；` +
-          `${result.ok ? pc.green('链完整') : pc.red('链校验失败')}\n`,
+        `审计记录 ${result.total} 条：` +
+          `${result.ok ? pc.green('格式与顺序自洽') : pc.red('发现不一致')}\n`,
       );
-      if (result.legacy > 0) {
-        process.stdout.write(pc.dim('旧格式记录可读，但不在哈希链上，不做完整性保证。\n'));
-      }
-      if (!result.chain.tailVerified) {
-        process.stdout.write(pc.dim('缺少 chain sidecar，无法判断尾部记录是否被截断。\n'));
+      if (result.invalidLines > 0) {
+        process.stdout.write(pc.red(`有 ${result.invalidLines} 行不是合法的审计记录。\n`));
       }
       for (const issue of result.issues) {
         process.stdout.write(pc.red(`  #${issue.id}: ${issue.reason}\n`));
