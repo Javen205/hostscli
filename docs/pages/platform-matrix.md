@@ -25,7 +25,7 @@
 | DNS 服务器读取（doctor） | `scutil --dns`（未验证） | `/etc/resolv.conf` → `resolvectl status`（未验证） | PowerShell `Get-DnsClientServerAddress`（未验证） |
 | Wi-Fi SSID 识别 | `networksetup -getairportnetwork <device>`（未验证） | `iwgetid` → `nmcli`（未验证） | **不支持**（返回 `unsupported`；`network auto` 以 `NETWORK` 错误退出（6），不写配置、不做切换） |
 | 解析验证（`--verify`） | `getaddrinfo`（已验证，测试注入 lookup） | 已验证（测试注入 lookup，未真实联网） | CI 已验证（测试注入 lookup） |
-| 跨进程锁 | 系统临时目录 `hostscli-locks/`（已验证） | 已验证 | CI 已验证 |
+| 跨进程锁 | 系统临时目录本身（`/tmp` 真实路径，需 root 属主 + `01777`；跨 euid 仅单测覆盖）（已验证） | 已验证 | CI 已验证 |
 | Git 快照 | 调用外部 `git`（已验证） | 已验证（镜像内 git） | CI 已验证（runner 自带 git） |
 | Shell 补全 | `bash` / `zsh` / `fish`（脚本输出已验证） | 已验证（脚本输出 + 单测） | **不支持**（无 PowerShell 补全脚本） |
 | 任何其他平台（freebsd 等） | — | — | 抛出 `UNSUPPORTED_PLATFORM`，exit 2 |

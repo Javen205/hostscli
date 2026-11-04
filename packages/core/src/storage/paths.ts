@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, posix, win32 } from 'node:path';
 import { InvalidInputError } from '../errors';
@@ -69,10 +70,19 @@ export function resolveDataPaths(options: DataPathOptions = {}): DataPaths {
 }
 
 /**
- * 锁目录固定放在系统临时目录下（POSIX 用 /tmp）：系统 hosts 文件可能不可写，
- * 锁不应依赖提权。固定路径便于在获取锁时校验目录属主与权限，防止被他人预建。
+ * 锁目录直接使用系统临时目录本身（POSIX 用 /tmp 的真实路径）：
+ * 系统 hosts 可能不可写，锁不应依赖提权；而 /tmp 由 root 拥有并带粘滞位，
+ * 既允许任意用户创建自己的锁文件，又只有属主（或 root）能删除。
+ *
+ * 不再使用 `/tmp/hostscli-locks` 子目录：子目录属主会成为单点阻塞——
+ * 普通用户先运行过一次后，目录属主是普通用户，root（sudo 写系统 hosts 的
+ * 主场景）就会因属主校验而无法使用。放在 /tmp 本身则不存在“目录属主”问题。
  */
 export function lockDirectory(): string {
   if (process.platform === 'win32') return join(tmpdir(), 'hostscli-locks');
-  return '/tmp/hostscli-locks';
+  try {
+    return realpathSync('/tmp');
+  } catch {
+    return '/tmp';
+  }
 }

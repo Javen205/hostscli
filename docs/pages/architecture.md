@@ -143,6 +143,6 @@ logs/run.jsonl       普通运行日志（JSONL，0600，按 logging.keep 轮转
 .git/                可选，git 快照仓库（不包含 cache/backups/history/logs/审计）
 ```
 
-跨进程锁放在系统临时目录 `hostscli-locks/`，避免系统 hosts 不可写时无法加锁。工作区锁按排序同时获取 `lockPathFor(hostsPath)` 与 `lockPathForDataDir(dataDir)`，覆盖"读 - 改 - 写 - 校验 - 持久化"全过程；配置文件在锁外加载，避免锁内再取锁。
+跨进程锁文件直接放在系统临时目录本身（POSIX 取 `/tmp` 的真实路径，如 macOS 的 `/private/tmp`），避免系统 hosts 不可写时无法加锁。目录必须由 root 拥有且权限为 `01777`（粘滞位 + 全员可创建）：普通用户与 `sudo` 都能创建自己的锁文件，但粘滞位保证只有锁文件属主或 root 能删除，因此不能抢占别人的锁。锁文件用 `O_CREAT|O_EXCL`（`0644`）原子创建，属主不再是使用判据；`kill(pid, 0)` 返回 `EPERM`（进程存在但属于别的用户）按存活处理，避免误删他人正在使用的锁。之所以不再使用 `/tmp/hostscli-locks` 子目录：子目录属主会成为单点阻塞——普通用户先运行过一次后，root（`sudo` 写系统 hosts 的主场景）会因属主校验而无法使用。工作区锁按排序同时获取 `lockPathFor(hostsPath)` 与 `lockPathForDataDir(dataDir)`，覆盖"读 - 改 - 写 - 校验 - 持久化"全过程；配置文件在锁外加载，避免锁内再取锁。
 
 锁按 hosts 路径串行化写入，但**不支持多个 dataDir 共用同一份 hosts**：串行不等于合并，后写者会按自己的 profiles/state 整段重建 hosts，先写者条目消失。需要多套规则时请在同一个 dataDir 内用 profile/layer。

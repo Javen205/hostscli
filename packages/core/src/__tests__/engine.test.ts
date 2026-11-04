@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import {
   chmod,
   mkdir,
@@ -219,10 +220,6 @@ describe('跨进程锁', () => {
   });
 
   it('可清理 PID 已不存在且已过期的陈旧锁', async () => {
-    const directoryForLock = join(tmpdir(), 'hostscli-locks');
-    await import('node:fs/promises').then(({ mkdir }) =>
-      mkdir(directoryForLock, { recursive: true }),
-    );
     await writeFile(
       lockPath,
       JSON.stringify({ pid: 999_999, startedAt: '2000-01-01T00:00:00.000Z' }),
@@ -271,9 +268,88 @@ describe('跨进程锁', () => {
     );
   });
 
-  it('锁目录在 POSIX 上固定为 /tmp/hostscli-locks', () => {
+  it('锁目录在 POSIX 上使用 /tmp 的真实路径', () => {
     if (process.platform !== 'win32') {
-      expect(lockDirectory()).toBe('/tmp/hostscli-locks');
+      expect(lockDirectory()).toBe(realpathSync('/tmp'));
+    }
+  });
+
+  it('自属主 1777 目录允许普通用户与 root（模拟 euid=0）交替使用', async () => {
+    if (process.platform === 'win32') return;
+    const euid = process.getuid?.() ?? 0;
+    const dir = await mkdtemp(join(tmpdir(), 'hostscli-lockdir-'));
+    await chmod(dir, 0o1777);
+    const lock = join(dir, 'alternating.lock');
+    try {
+      await withFileLock(lock, async () => undefined, { directory: dir, euid });
+      await withFileLock(lock, async () => undefined, { directory: dir, euid: 0 });
+      await withFileLock(lock, async () => undefined, { directory: dir, euid });
+    } finally {
+      await chmod(dir, 0o700).catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('目录属主与 euid 不一致且非 root 时拒绝，并同时报出两个 uid', async () => {
+    if (process.platform === 'win32') return;
+    const euid = process.getuid?.() ?? 0;
+    const dir = await mkdtemp(join(tmpdir(), 'hostscli-lockdir-'));
+    await chmod(dir, 0o1777);
+    try {
+      await expect(
+        withFileLock(join(dir, 'owner-mismatch.lock'), async () => undefined, {
+          directory: dir,
+          euid: euid + 1,
+        }),
+      ).rejects.toThrow(new RegExp(`属主 uid=${euid}，当前 euid=${euid + 1}`));
+    } finally {
+      await chmod(dir, 0o700).catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('目录权限不是 1777 时拒绝，且不静默 chmod', async () => {
+    if (process.platform === 'win32') return;
+    const euid = process.getuid?.() ?? 0;
+    const dir = await mkdtemp(join(tmpdir(), 'hostscli-lockdir-'));
+    await chmod(dir, 0o755);
+    const before = (await stat(dir)).mode & 0o7777;
+    try {
+      await expect(
+        withFileLock(join(dir, 'bad-mode.lock'), async () => undefined, {
+          directory: dir,
+          euid,
+        }),
+      ).rejects.toThrow(/01777/);
+      expect((await stat(dir)).mode & 0o7777).toBe(before);
+    } finally {
+      await chmod(dir, 0o700).catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('无法判定持有者已退出时不抢锁（EPERM 视为存活）', async () => {
+    if (process.platform === 'win32') return;
+    const euid = process.getuid?.() ?? 0;
+    const dir = await mkdtemp(join(tmpdir(), 'hostscli-lockdir-'));
+    await chmod(dir, 0o1777);
+    const lock = join(dir, 'alive.lock');
+    await writeFile(lock, JSON.stringify({ pid: 999_999, uid: euid + 1, token: 'x' }));
+    try {
+      await expect(
+        withFileLock(lock, async () => undefined, {
+          directory: dir,
+          euid,
+          timeoutMs: 40,
+          retryMs: 5,
+          staleMs: 1_000,
+          isProcessAlive: () => true,
+        }),
+      ).rejects.toBeInstanceOf(LockedError);
+      expect(await readFile(lock, 'utf8')).toContain('999999');
+    } finally {
+      await chmod(dir, 0o700).catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });
