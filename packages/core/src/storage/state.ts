@@ -23,14 +23,6 @@ export const ttlRecordSchema = z.object({
 
 export type TtlRecord = z.infer<typeof ttlRecordSchema>;
 
-export const renderSourceSchema = z.object({
-  hostname: z.string().min(1),
-  ip: z.string().min(1),
-  layerId: z.string().min(1),
-});
-
-export type RenderSource = z.infer<typeof renderSourceSchema>;
-
 /**
  * `run` 的会话租约。父进程被强杀时无法执行清理，记录会残留；
  * `run list` / `run gc` 依据 pid 是否存活回收。
@@ -48,10 +40,17 @@ export const sessionRecordSchema = z.object({
 
 export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 
+/**
+ * 上一次成功渲染的标记，只保留渲染时间与整文件哈希。
+ *
+ * 旧版本还持久化了一份按主机名逐条记录的 `sources` 映射，但全仓没有读取方：
+ * `stack explain` 从当前规则与 hosts 现算候选链，`list` / `doctor` 也从当前
+ * hosts 解析。这份副本只会随写入重写，100k 条时可达十余 MB，因此不再持久化。
+ * 旧 state 里的 `sources` 会被 schema 丢弃，下次写入自然瘦身。
+ */
 export const lastRenderSchema = z.object({
   at: z.string(),
   planHash: z.string(),
-  sources: z.array(renderSourceSchema).default(() => []),
 });
 
 export type LastRender = z.infer<typeof lastRenderSchema>;

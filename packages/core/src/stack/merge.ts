@@ -36,7 +36,6 @@ export interface ExplainCandidate {
 export interface MergeResult {
   /** 每条最终主机名一条记录（hostnames 长度为 1），按主机名字典序。 */
   entries: HostEntry[];
-  sources: Array<{ hostname: string; ip: string; layerId: string }>;
   /** 主机名 → 全部候选，供 `stack explain` 使用。 */
   candidates: Map<string, ExplainCandidate[]>;
 }
@@ -170,7 +169,6 @@ export function mergeLayers(layers: LayerInput[], options: MergeOptions = {}): M
 
   const keys = [...byHostname.keys()].sort((a, b) => a.localeCompare(b));
   const entries: HostEntry[] = [];
-  const sources: MergeResult['sources'] = [];
   const candidates = new Map<string, ExplainCandidate[]>();
 
   for (const hostname of keys) {
@@ -187,11 +185,10 @@ export function mergeLayers(layers: LayerInput[], options: MergeOptions = {}): M
       ...(winner.entry.comment ? { comment: winner.entry.comment } : {}),
     });
 
-    sources.push({ hostname, ip: winner.ip, layerId: winner.layerId });
     candidates.set(hostname, toExplainCandidates(list, winner));
   }
 
-  return { entries, sources, candidates };
+  return { entries, candidates };
 }
 
 export interface ExplainResolution {

@@ -542,7 +542,6 @@ export async function commitPlan(
     workspace.state.lastRender = {
       at: workspace.now.toISOString(),
       planHash: plan.planHash,
-      sources: plan.merged.sources,
     };
     // TTL 记录原先记录的是“写入时整文件哈希”。本次成功写回后整文件哈希已变化，
     // 若不刷新，后续任何 CLI 自身写入都会被误判为“外部修改”而跳过到期结算。

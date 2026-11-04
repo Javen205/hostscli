@@ -63,9 +63,9 @@ describe('规则栈合并', () => {
 
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0]?.ip).toBe('10.10.1.5');
-    expect(result.sources).toEqual([
-      { hostname: 'api.example.com', ip: '10.10.1.5', layerId: 'office' },
-    ]);
+    expect(
+      result.candidates.get('api.example.com')?.find((item) => item.layerId === 'office')?.selected,
+    ).toBe(true);
     expect(result.candidates.get('api.example.com')?.some((item) => item.shadowed)).toBe(true);
   });
 

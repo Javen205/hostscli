@@ -215,7 +215,7 @@ export {
   ttlRecordSchema,
   lastRenderSchema,
 } from './storage/state';
-export type { HostsCliState, TtlRecord, RenderSource, LastRender } from './storage/state';
+export type { HostsCliState, TtlRecord, LastRender } from './storage/state';
 export type { DataPaths, DataPathOptions } from './storage/paths';
 export { resolveDataDir, resolveDataPaths } from './storage/paths';
 
