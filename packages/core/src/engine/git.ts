@@ -13,6 +13,7 @@ import { prepare } from './crud';
 import { resolveActiveLayers } from './layers';
 import { buildRenderPlan } from './plan';
 import type { MutationResult } from './types';
+import { auditAuxWrite } from './aux-write';
 
 const execFileAsync = promisify(execFile);
 
@@ -256,20 +257,44 @@ export async function gitStatusOf(options: WorkspaceOptions = {}): Promise<GitSt
 /** 在数据目录初始化独立 git 仓库（幂等）；已存在非 hostscli 仓库时拒绝。 */
 export async function gitInit(options: WorkspaceOptions = {}): Promise<GitStatusResult> {
   return withWorkspace(options, async (workspace) => {
+    const before = await gitStatus({ dataDir: workspace.dataDir });
     await ensureRepo({ dataDir: workspace.dataDir });
-    return gitStatus({ dataDir: workspace.dataDir });
+    const after = await gitStatus({ dataDir: workspace.dataDir });
+    if (!before.initialized) {
+      await auditAuxWrite(workspace, {
+        command: 'git init',
+        detail: `初始化数据目录 git 仓库（${after.gitDir}）。`,
+      });
+    }
+    return after;
   });
 }
 
 export async function gitSnapshot(options: GitSnapshotOptions = {}): Promise<GitSnapshotResult> {
   return withWorkspace(options, async (workspace) => {
     const message = normalizeMessage(options.message);
+    const before = await gitStatus({ dataDir: workspace.dataDir });
     await ensureRepo({ dataDir: workspace.dataDir });
+    if (!before.initialized) {
+      await auditAuxWrite(workspace, {
+        command: 'git init',
+        detail: `初始化数据目录 git 仓库（${workspace.dataDir}）。`,
+      });
+    }
 
     const commit = await commitWorkTree(workspace.dataDir, message);
     if (commit === null) {
       return { created: false, commit: null, message: '数据目录没有变更，未创建快照。' };
     }
+    // 快照是数据目录的写操作，但内容已由 git 对象 ID 指纹化；
+    // 审计里直接记录前后 HEAD，便于把回滚目标与审计串起来。
+    await auditAuxWrite(workspace, {
+      command: 'git snapshot',
+      args: [message],
+      beforeSha256: before.head,
+      afterSha256: commit,
+      detail: `创建快照 ${commit.slice(0, 7)}：${message}`,
+    });
     return { created: true, commit, message };
   });
 }
@@ -367,6 +392,14 @@ export async function gitRollback(options: GitRollbackOptions): Promise<GitRollb
     }
 
     const warnings: string[] = [];
+    let beforeHead: string | null = null;
+    try {
+      beforeHead = (
+        await runner([...baseArgs(workspace.dataDir), 'rev-parse', '--verify', 'HEAD'])
+      ).trim();
+    } catch {
+      // unborn HEAD：首次回滚没有前序快照。
+    }
     // 回滚会覆盖工作区；先把未快照变更提交为保护快照，避免这些内容在历史里无法找回。
     const safetyCommit = await commitWorkTree(
       workspace.dataDir,
@@ -410,6 +443,16 @@ export async function gitRollback(options: GitRollbackOptions): Promise<GitRollb
     const rollbackCommit = (
       await runner([...baseArgs(workspace.dataDir), 'rev-parse', 'HEAD'])
     ).trim();
+
+    // 先在仓库侧记账，再做 hosts 重建：即使重建失败，用户也能从审计看到
+    // "数据目录已回滚到 X"这一既成事实。
+    await auditAuxWrite(workspace, {
+      command: 'git rollback',
+      args: [rev],
+      beforeSha256: beforeHead,
+      afterSha256: rollbackCommit,
+      detail: `回滚数据目录到 ${commitHash.slice(0, 7)}，生成提交 ${rollbackCommit.slice(0, 7)}${safetyCommit ? `（保护快照 ${safetyCommit.slice(0, 7)}）` : ''}。`,
+    });
 
     // config / state / profiles 已被覆盖，必须重新从磁盘读取，不能复用内存里的旧状态。
     const previousConfig = workspace.config;

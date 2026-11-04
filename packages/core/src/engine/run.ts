@@ -6,6 +6,7 @@ import { profilePath, readProfile } from '../profiles/store';
 import type { Profile } from '../profiles/store';
 import type { SessionRecord } from '../storage/state';
 import { appendAudit, currentOperator, recordAuditFailure } from './audit';
+import { logRuntime } from './aux-write';
 import { commitPlan } from './commit';
 import type { Workspace, WorkspaceOptions } from './context';
 import { withWorkspace } from './context';
@@ -137,6 +138,12 @@ export async function startRun(options: RunStartOptions): Promise<RunStartResult
       args: [...options.command],
     });
 
+    await logRuntime(workspace, {
+      command: 'run',
+      event: 'run-start',
+      detail: `会话 ${session.sessionId}：${session.hostnames.join(', ')} → ${session.ip}，pid ${session.pid}。`,
+    });
+
     return { session, hostsPath: workspace.hostsPath, mutation };
   });
 }
@@ -230,6 +237,11 @@ export async function finishRun(
       });
       warnings.push('会话已清理，但审计写入失败；audit verify 会报告存在未审计操作。');
     }
+    await logRuntime(workspace, {
+      command: 'run',
+      event: 'run-cleanup',
+      detail: `会话 ${sessionId} 结束。`,
+    });
     return { changed: true, removed: true, mutation, warnings };
   });
 }
@@ -294,6 +306,12 @@ export async function gcRuns(
       });
       warnings.push('孤儿会话已回收，但审计写入失败；audit verify 会报告存在未审计操作。');
     }
+
+    await logRuntime(workspace, {
+      command: 'run gc',
+      event: 'run-gc',
+      detail: `回收 ${orphans.length} 个孤儿会话：${orphans.map((session) => session.sessionId).join(', ')}。`,
+    });
 
     return { changed: true, dryRun: false, removed: orphans, warnings };
   });

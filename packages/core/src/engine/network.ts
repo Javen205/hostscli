@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { EntryNotFoundError, InvalidInputError, NetworkError } from '../errors';
 import { detectNetwork } from '../network/detect';
 import type { NetworkInfo } from '../network/detect';
@@ -10,6 +11,17 @@ import { withWorkspace } from './context';
 import { prepare } from './crud';
 import { buildRenderPlan } from './plan';
 import type { MutationResult } from './types';
+import { auditAuxWrite } from './aux-write';
+import { hashBytes } from './history';
+
+async function readFileOrNull(path: string): Promise<Buffer | null> {
+  try {
+    return await readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
 
 export interface NetworkStatusResult {
   network: NetworkInfo;
@@ -89,10 +101,18 @@ export async function mapNetwork(
       layers,
       ...(options.name !== undefined ? { name: options.name } : {}),
     };
+    const before = await readFileOrNull(workspace.paths.configPath);
     const existing = findMapping(workspace.config.network.mappings, ssid);
     if (existing) Object.assign(existing, mapping);
     else workspace.config.network.mappings.push(mapping);
     await saveConfig(workspace.paths.configPath, workspace.config);
+    await auditAuxWrite(workspace, {
+      command: 'network map',
+      args: [ssid, `--layers=${layers.join(',')}`],
+      beforeSha256: hashBytes(before),
+      afterSha256: hashBytes(await readFileOrNull(workspace.paths.configPath)),
+      detail: `映射 ${ssid} → ${layers.join(', ') || '（空）'}（${existing ? '覆盖' : '新增'}）。`,
+    });
 
     const warnings: string[] = [];
     if (layers.length === 0) {
@@ -114,14 +134,22 @@ export async function mapNetwork(
 export async function unmapNetwork(options: UnmapNetworkOptions): Promise<{ removed: string }> {
   return withWorkspace(options, async (workspace) => {
     const ssid = assertSsid(options.ssid);
-    const before = workspace.config.network.mappings.length;
+    const before = await readFileOrNull(workspace.paths.configPath);
+    const beforeCount = workspace.config.network.mappings.length;
     workspace.config.network.mappings = workspace.config.network.mappings.filter(
       (mapping) => mapping.ssid !== ssid,
     );
-    if (workspace.config.network.mappings.length === before) {
+    if (workspace.config.network.mappings.length === beforeCount) {
       throw new EntryNotFoundError(`没有 SSID ${ssid} 的映射。`);
     }
     await saveConfig(workspace.paths.configPath, workspace.config);
+    await auditAuxWrite(workspace, {
+      command: 'network unmap',
+      args: [ssid],
+      beforeSha256: hashBytes(before),
+      afterSha256: hashBytes(await readFileOrNull(workspace.paths.configPath)),
+      detail: `删除 SSID ${ssid} 的映射。`,
+    });
     return { removed: ssid };
   });
 }

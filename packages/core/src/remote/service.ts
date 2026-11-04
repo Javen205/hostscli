@@ -18,6 +18,17 @@ import { writeJsonFile } from '../storage/json';
 import { atomicWriteFile } from '../system/atomic-write';
 import type { Workspace, WorkspaceOptions } from '../engine/context';
 import { withWorkspace } from '../engine/context';
+import { auditAuxWrite } from '../engine/aux-write';
+import { hashBytes } from '../engine/history';
+
+async function readFileOrNull(path: string): Promise<Buffer | null> {
+  try {
+    return await readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
 
 const cacheMetaSchema = z.object({
   url: z.string(),
@@ -384,6 +395,7 @@ export async function addRemoteSource(
       ...(options.name !== undefined ? { name: options.name } : {}),
       ...(options.priority !== undefined ? { priority: options.priority } : {}),
     };
+    const before = await readFileOrNull(workspace.paths.configPath);
     workspace.config.remote.sources.push(source);
 
     if (options.activate) {
@@ -397,6 +409,14 @@ export async function addRemoteSource(
     if (options.activate) {
       await saveState(workspace.paths.statePath, workspace.state);
     }
+    // detail 只放去掉凭据与 query 的 URL，避免审计日志泄漏订阅 token。
+    await auditAuxWrite(workspace, {
+      command: 'remote add',
+      args: [source.id],
+      beforeSha256: hashBytes(before),
+      afterSha256: hashBytes(await readFileOrNull(workspace.paths.configPath)),
+      detail: `添加订阅 ${source.id} → ${displayUrl(source.url)}（方案 ${source.profileId}，启用=${source.enabled}，activate=${options.activate === true}）。`,
+    });
 
     const warnings: string[] = [];
     const profileIdValue = source.profileId ?? source.id;
@@ -437,6 +457,7 @@ export async function removeRemoteSource(
 ): Promise<{ removed: string; warnings: string[] }> {
   return withWorkspace(options, async (workspace) => {
     const source = await findSource(workspace, options.id);
+    const before = await readFileOrNull(workspace.paths.configPath);
     workspace.config.remote.sources = workspace.config.remote.sources.filter(
       (candidate) => candidate.id !== options.id,
     );
@@ -448,6 +469,13 @@ export async function removeRemoteSource(
       unlink(paths.meta).catch(() => undefined),
       unlink(paths.content).catch(() => undefined),
     ]);
+    await auditAuxWrite(workspace, {
+      command: 'remote remove',
+      args: [options.id],
+      beforeSha256: hashBytes(before),
+      afterSha256: hashBytes(await readFileOrNull(workspace.paths.configPath)),
+      detail: `删除订阅 ${source.id}（${displayUrl(source.url)}），清理缓存；方案 ${profileId} 保留。`,
+    });
 
     return {
       removed: options.id,
@@ -472,6 +500,7 @@ export async function updateRemoteSources(
 
     const timeoutMs = options.timeoutMs ?? workspace.config.remote.timeoutMs;
     const maxBytes = options.maxBytes ?? workspace.config.remote.maxBytes;
+    const before = await readFileOrNull(workspace.paths.configPath);
     const results: RemoteUpdateResult[] = [];
     const warnings: string[] = [];
 
@@ -491,6 +520,21 @@ export async function updateRemoteSources(
     }
 
     await saveConfig(workspace.paths.configPath, workspace.config);
+    // 订阅更新会同时改写缓存、方案文件与 config（lastUpdatedAt）；
+    // 以 config 前后指纹作为命令级凭据，逐个结果写入 detail。
+    await auditAuxWrite(workspace, {
+      command: 'remote update',
+      args: options.id ? [options.id] : [],
+      beforeSha256: hashBytes(before),
+      afterSha256: hashBytes(await readFileOrNull(workspace.paths.configPath)),
+      changed: results.some((result) => result.profileUpdated),
+      detail: `更新订阅：${results
+        .map(
+          (result) =>
+            `${result.id}→${result.profileId} ${result.status}${result.profileUpdated ? '（方案已改写）' : ''}`,
+        )
+        .join('；')}。`,
+    });
     return {
       results,
       failed: results.filter((result) => result.status === 'failed').length,

@@ -15,6 +15,7 @@ import { sha256Buffer } from './plan';
 import type { MutationResult } from './types';
 import { appendAudit, currentOperator, recordAuditFailure } from './audit';
 import { hashBytes, readStateRaw, recordOperation, summarizeChange } from './history';
+import { logRuntime } from './aux-write';
 import { verifyManagedEntries } from './verify';
 
 export interface CommitOptions {
@@ -240,6 +241,16 @@ async function appendWriteAudit(
     });
     warnings.push('写入成功，但审计记录失败；audit verify 会报告存在未审计操作。');
   }
+  await logRuntime(workspace, {
+    command: resolveCommand(options),
+    args: resolveCommandArgs(options),
+    event: 'write-ok',
+    detail: plan.changed
+      ? `hosts ${before ?? 'null'} → ${after}`
+      : (options.profiles ?? []).length > 0
+        ? '仅持久化方案文件'
+        : '仅持久化 state',
+  });
   return { before, after, summary };
 }
 
@@ -384,6 +395,14 @@ export async function commitPlan(
       if (!rolledBack) {
         warnings.push('检测到 hosts 已被其他进程修改，未执行自动回滚，以免覆盖他人改动。');
       }
+      await logRuntime(workspace, {
+        level: 'warn',
+        command: resolveCommand(options),
+        event: 'rollback',
+        detail: rolledBack
+          ? '回读校验失败，已回滚 hosts。'
+          : '回读校验失败，hosts 已被他人修改，跳过回滚。',
+      });
       throw new VerificationError(
         rolledBack
           ? '写入后回读校验失败：文件内容与预期不一致，已尝试回滚到写入前的备份。'
@@ -459,6 +478,12 @@ export async function commitPlan(
       if (!rolledBack) {
         warnings.push('检测到 hosts 已被其他进程修改，未执行自动回滚，以免覆盖他人改动。');
       }
+      await logRuntime(workspace, {
+        level: 'warn',
+        command: resolveCommand(options),
+        event: 'rollback',
+        detail: rolledBack ? '解析验证失败，已回滚 hosts。' : '解析验证失败，跳过回滚。',
+      });
       const sample = verification.failures
         .slice(0, 3)
         .map(
@@ -549,6 +574,12 @@ export async function commitPlan(
           : '持久化方案/状态失败；检测到 hosts 已被其他进程修改，未自动回滚。',
       );
     }
+    await logRuntime(workspace, {
+      level: 'error',
+      command: resolveCommand(options),
+      event: 'rollback',
+      detail: `持久化方案/状态失败：${String(error)}`,
+    });
     throw error;
   }
 

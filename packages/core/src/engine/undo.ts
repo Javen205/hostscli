@@ -29,6 +29,7 @@ import { defaultEolFor } from '../system/platform';
 import type { Workspace, WorkspaceOptions } from './context';
 import { shouldFlushDns, withWorkspace } from './context';
 import { appendAudit, currentOperator, recordAuditFailure } from './audit';
+import { logRuntime } from './aux-write';
 import { verifyManagedEntries } from './verify';
 
 export interface UndoOptions extends WorkspaceOptions {
@@ -328,6 +329,12 @@ export async function undoHosts(options: UndoOptions = {}): Promise<UndoResult> 
           state: target.state,
           profiles: target.profiles,
         }).catch(() => undefined);
+        await logRuntime(workspace, {
+          level: 'warn',
+          command: 'undo',
+          event: 'rollback',
+          detail: '撤销后解析验证失败，已回滚到撤销前内容。',
+        });
         throw new VerificationError(
           `撤销后解析验证失败（${verification.failures.length} 个域名），已回滚到撤销前内容。`,
         );
@@ -394,6 +401,13 @@ export async function undoHosts(options: UndoOptions = {}): Promise<UndoResult> 
       });
       warnings.push('撤销已成功，但审计写入失败；audit verify 会报告存在未审计操作。');
     }
+
+    await logRuntime(workspace, {
+      command: 'undo',
+      args: ['--steps', String(steps)],
+      event: 'undo-ok',
+      detail: `撤销 ${steps} 次写入（${consumes.join(' → ')}）。`,
+    });
 
     return {
       changed,

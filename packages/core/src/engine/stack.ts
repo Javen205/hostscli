@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { EntryNotFoundError, InvalidInputError } from '../errors';
 import type { HostsDocument } from '../hosts/models';
 import { normalizeHostname } from '../hosts/models';
@@ -6,6 +7,7 @@ import {
   listProfileIds,
   profileIdFromPath,
   profileIdSchema,
+  profilePath,
   readProfile,
   readProfileSource,
   writeProfile,
@@ -21,6 +23,8 @@ import { prepare } from './crud';
 import { buildLayerInputs, resolveActiveLayers } from './layers';
 import { buildRenderPlan, sha256Buffer } from './plan';
 import type { MutationResult } from './types';
+import { auditAuxWrite } from './aux-write';
+import { hashBytes, readStateRaw } from './history';
 
 export interface StackLayerView {
   profile: Profile;
@@ -113,6 +117,15 @@ export async function listStackLayers(options: WorkspaceOptions = {}): Promise<S
   });
 }
 
+async function readFileOrNull(path: string): Promise<Buffer | null> {
+  try {
+    return await readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 export async function addStackLayer(options: AddStackLayerOptions): Promise<AddStackLayerResult> {
   return withWorkspace(options, async (workspace) => {
     const source = await readProfileSource(options.file);
@@ -131,6 +144,10 @@ export async function addStackLayer(options: AddStackLayerOptions): Promise<AddS
     if (replaced && !options.force) {
       throw new InvalidInputError(`层 ${checkedId.data} 已存在。使用 --force 覆盖，或换一个 ID。`);
     }
+
+    const profilePathValue = profilePath(workspace.paths.profilesDir, checkedId.data);
+    const beforeProfile = replaced ? await readFileOrNull(profilePathValue) : null;
+    const beforeStateRaw = await readStateRaw(workspace.paths.statePath);
 
     const entries: ProfileEntry[] = source.entries.map((entry) => {
       const value: ProfileEntry = {
@@ -162,6 +179,16 @@ export async function addStackLayer(options: AddStackLayerOptions): Promise<AddS
     workspace.state.initialized = true;
     await saveState(workspace.paths.statePath, workspace.state);
 
+    // 层导入同时改动方案文件与 state；审计以方案文件为主指纹，
+    // state 的启用集合变化写进 detail，便于人工核对。
+    await auditAuxWrite(workspace, {
+      command: 'stack layer add',
+      args: [checkedId.data, '--file', options.file],
+      beforeSha256: hashBytes(beforeProfile),
+      afterSha256: hashBytes(await readFileOrNull(profilePathValue)),
+      detail: `导入层 ${profile.id}（${profile.entries.length} 条，priority ${profile.priority}；覆盖=${replaced}，启用=${enabled}；state ${hashBytes(beforeStateRaw)} → ${hashBytes(await readStateRaw(workspace.paths.statePath))}）。`,
+    });
+
     return {
       profile,
       enabled,
@@ -178,6 +205,7 @@ export async function setStackLayerEnabled(
     await readProfile(workspace.paths.profilesDir, options.id);
     const current = workspace.state.activeLayers.includes(options.id);
     const changed = current !== options.enabled;
+    const beforeStateRaw = await readStateRaw(workspace.paths.statePath);
 
     if (options.enabled && !current) {
       workspace.state.activeLayers.push(options.id);
@@ -188,6 +216,13 @@ export async function setStackLayerEnabled(
     workspace.state.initialized = true;
     if (changed) {
       await saveState(workspace.paths.statePath, workspace.state);
+      await auditAuxWrite(workspace, {
+        command: options.enabled ? 'stack layer enable' : 'stack layer disable',
+        args: [options.id],
+        beforeSha256: hashBytes(beforeStateRaw),
+        afterSha256: hashBytes(await readStateRaw(workspace.paths.statePath)),
+        detail: `${options.enabled ? '启用' : '停用'}层 ${options.id}（只改 activeLayers，需再 apply 才写入 hosts）。`,
+      });
     }
 
     return {

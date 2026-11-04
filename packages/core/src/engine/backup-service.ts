@@ -11,6 +11,8 @@ import { loadHostsDocument, shouldFlushDns, withWorkspace } from './context';
 import { sha256Buffer } from './plan';
 import type { WorkspaceOptions } from './context';
 import type { MutationResult } from './types';
+import { auditAuxWrite } from './aux-write';
+import { hashBytes } from './history';
 
 export interface BackupOptions extends WorkspaceOptions {
   keep?: number;
@@ -28,10 +30,18 @@ export async function createHostsBackup(options: BackupOptions = {}): Promise<st
   return withWorkspace(options, async (workspace) => {
     const { raw } = await loadHostsDocument(workspace, false);
     if (raw === null) throw new EntryNotFoundError(`hosts 文件不存在：${workspace.hostsPath}`);
-    return backupFile(workspace.hostsPath, raw, {
+    const backupPath = await backupFile(workspace.hostsPath, raw, {
       backupDir: workspace.paths.backupsDir,
       keep: options.keep ?? workspace.config.defaults.backupKeep,
     });
+    // 备份不改变 hosts 内容，但确实新增了一个数据文件，仍需留痕。
+    await auditAuxWrite(workspace, {
+      command: 'backup create',
+      beforeSha256: hashBytes(raw),
+      afterSha256: hashBytes(raw),
+      detail: `创建 hosts 备份：${backupPath}。`,
+    });
+    return backupPath;
   });
 }
 
@@ -115,6 +125,14 @@ export async function restoreHostsBackup(options: RestoreOptions = {}): Promise<
       }
       throw error;
     }
+
+    await auditAuxWrite(workspace, {
+      command: 'restore',
+      args: [source],
+      beforeSha256: hashBytes(raw),
+      afterSha256: restoredHash,
+      detail: `从备份恢复 hosts：${source}（恢复前内容已另存为 ${previousBackup ?? '临时缺失'}）。`,
+    });
 
     const warnings = [
       '已从备份恢复 hosts；托管区块可能与当前规则集不一致，建议执行 hostscli apply 或 hostscli list 检查。',

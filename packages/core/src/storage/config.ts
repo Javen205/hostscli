@@ -64,6 +64,15 @@ const outputSchema = z
   })
   .default(() => ({ format: 'table' as const, color: 'auto' as const }));
 
+const loggingSchema = z
+  .object({
+    /** 运行日志默认开启：只记命令/事件/结果，不含业务数据正文。 */
+    enabled: z.boolean().default(true),
+    /** 运行日志保留行数；0 表示不轮转。 */
+    keep: z.number().int().min(0).max(10_000).default(500),
+  })
+  .default(() => ({ enabled: true, keep: 500 }));
+
 const remoteConfigSchema = z
   .object({
     timeoutMs: z.number().int().positive().max(120_000).default(15_000),
@@ -101,6 +110,7 @@ export const configSchema = z
     ttl: ttlConfigSchema,
     profilesDir: z.string().min(1).default('profiles'),
     output: outputSchema,
+    logging: loggingSchema,
     remote: remoteConfigSchema,
     network: networkConfigSchema,
   })
@@ -162,13 +172,14 @@ export async function saveConfig(configPath: string, config: HostsCliConfig): Pr
   await writeJsonFile(configPath, configSchema.parse(config));
 }
 
-const BOOLEAN_KEYS = new Set(['defaults.dnsFlush', 'defaults.verifyAfterApply']);
+const BOOLEAN_KEYS = new Set(['defaults.dnsFlush', 'defaults.verifyAfterApply', 'logging.enabled']);
 const NUMBER_KEYS = new Set([
   'defaults.backupKeep',
   'defaults.verifyMaxHostnames',
   'defaults.verifyTimeoutMs',
   'defaults.auditKeep',
   'defaults.historyKeep',
+  'logging.keep',
   'remote.timeoutMs',
   'remote.maxBytes',
 ]);
