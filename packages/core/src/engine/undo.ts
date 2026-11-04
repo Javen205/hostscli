@@ -22,6 +22,7 @@ import {
   restoreFile,
 } from './history';
 import { profilePath } from '../profiles/store';
+import type { HostsCliState } from '../storage/state';
 import { atomicWriteFile } from '../system/atomic-write';
 import { flushDns } from '../system/dns-flush';
 import { canWriteDirectly, permissionHint } from '../system/privilege';
@@ -30,6 +31,7 @@ import type { Workspace, WorkspaceOptions } from './context';
 import { shouldFlushDns, withWorkspace } from './context';
 import { appendAudit, currentOperator, recordAuditFailure } from './audit';
 import { logRuntime } from './aux-write';
+import { isPidAlive } from './run';
 import { verifyManagedEntries } from './verify';
 
 export interface UndoOptions extends WorkspaceOptions {
@@ -126,6 +128,97 @@ async function assertUndoBaseline(
   }
 }
 
+/**
+ * 读取并校验历史快照：
+ * - `hostsPath` 必须与本次工作区一致（同一 dataDir 可能被指向不同 hosts）；
+ * - 快照原始字节必须与记录里的 `before` 指纹一致（sha256）。
+ *
+ * 任何不一致都以 CONFLICT 拒绝，绝不部分写入。
+ */
+async function readVerifiedSnapshot(
+  workspace: Workspace,
+  record: HistoryRecord,
+): Promise<HistorySnapshot> {
+  if (record.hostsPath !== workspace.hostsPath) {
+    throw new HostsCliError(
+      'CONFLICT',
+      `历史记录 ${record.id} 属于 ${record.hostsPath}，与当前 hosts（${workspace.hostsPath}）不一致，拒绝撤销。`,
+    );
+  }
+
+  let snapshot: HistorySnapshot;
+  try {
+    snapshot = await readSnapshot(workspace.dataDir, record);
+  } catch (error) {
+    throw new HostsCliError(
+      'CONFLICT',
+      `历史快照 ${record.id} 不可用或已损坏，拒绝撤销：${String(error)}`,
+    );
+  }
+
+  if (fingerprintMismatch(record.before.hosts, snapshot.hosts)) {
+    throw new HostsCliError(
+      'CONFLICT',
+      `历史快照 ${record.id} 的 hosts 内容与记录指纹不一致（可能被篡改或损坏），拒绝撤销。`,
+    );
+  }
+  if (fingerprintMismatch(record.before.state, snapshot.state)) {
+    throw new HostsCliError(
+      'CONFLICT',
+      `历史快照 ${record.id} 的 state 内容与记录指纹不一致（可能被篡改或损坏），拒绝撤销。`,
+    );
+  }
+  for (const [id, expected] of Object.entries(record.before.profiles)) {
+    if (fingerprintMismatch(expected, snapshot.profiles.get(id) ?? null)) {
+      throw new HostsCliError(
+        'CONFLICT',
+        `历史快照 ${record.id} 的方案 ${id} 内容与记录指纹不一致（可能被篡改或损坏），拒绝撤销。`,
+      );
+    }
+  }
+  return snapshot;
+}
+
+/**
+ * 回放 state 前清理已失效的临时状态：
+ * - `sessions` 里 pid 已死的租约丢弃，并删除对应会话方案文件，避免 undo 复活孤儿；
+ * - 已到期（且未暂停）的 TTL 记录直接丢弃。
+ *
+ * TTL 选择"丢弃"而非"重基准"：撤销一个已经结算过的 TTL 时，若把过期时间
+ * 重新写成未来，会让下一次 `list` 又产生一次新的结算写入（undo 看似失效）；
+ * 丢弃则让"到期即结束"的事实保持不变，连续两次 `list` 不再改变状态。
+ * 暂停中的记录保留剩余时间，撤销不应替用户恢复计时。
+ */
+function sanitizeRestoredState(
+  state: HostsCliState,
+  now: Date,
+): { state: HostsCliState; deadSessionLayerIds: string[]; droppedTtl: number } {
+  const nowMs = now.getTime();
+  const deadSessions = state.sessions.filter((session) => !isPidAlive(session.pid));
+  const deadSessionLayerIds = deadSessions.map((session) => session.layerId);
+  const deadSet = new Set(deadSessionLayerIds);
+
+  const expiredTtl = state.ttl.filter(
+    (record) => !record.paused && Date.parse(record.expiresAt) <= nowMs,
+  );
+
+  if (deadSessions.length === 0 && expiredTtl.length === 0) {
+    return { state, deadSessionLayerIds: [], droppedTtl: 0 };
+  }
+
+  const next: HostsCliState = {
+    ...state,
+    sessions: state.sessions.filter((session) => !deadSet.has(session.layerId)),
+    activeLayers: state.activeLayers.filter((id) => !deadSet.has(id)),
+    ttl: state.ttl.filter((record) => !(!record.paused && Date.parse(record.expiresAt) <= nowMs)),
+  };
+  return { state: next, deadSessionLayerIds, droppedTtl: expiredTtl.length };
+}
+
+function serializeState(state: HostsCliState): Buffer {
+  return Buffer.from(`${JSON.stringify(state, null, 2)}\n`, 'utf8');
+}
+
 function chainMismatch(older: HistoryRecord, newer: HistoryRecord): string | null {
   if (older.after.hosts !== newer.before.hosts) return 'hosts';
   if (older.after.state !== newer.before.state) return 'state';
@@ -203,7 +296,7 @@ async function applySnapshot(
 }
 
 /**
- * 撤销最近 N 次成功写入：一次性回放最旧那条记录的"写入前"快照，
+ * 撤销最近 N 次成功写入：按记录逆序逐条回放各自的"写入前"快照，
  * 并把本次 undo 本身记录为一条可再次撤销的操作（即 redo）。
  */
 export async function undoHosts(options: UndoOptions = {}): Promise<UndoResult> {
@@ -226,7 +319,6 @@ export async function undoHosts(options: UndoOptions = {}): Promise<UndoResult> 
 
     const selected = available.slice(available.length - steps);
     const latest = selected.at(-1) as HistoryRecord;
-    const targetRecord = selected[0] as HistoryRecord;
 
     const warnings: string[] = [];
     await assertUndoBaseline(workspace, latest, warnings);
@@ -243,14 +335,57 @@ export async function undoHosts(options: UndoOptions = {}): Promise<UndoResult> 
       }
     }
 
-    const target = await readSnapshot(workspace.dataDir, targetRecord);
     const currentHosts = await readMaybe(workspace.hostsPath);
     const currentState = await readStateRaw(workspace.paths.statePath);
     const currentProfiles = await readAllProfiles(workspace.paths.profilesDir);
 
-    // 目标快照只覆盖操作触及的 profile；未触及的保持现状。
-    const afterProfiles = new Map(currentProfiles);
-    for (const [id, content] of target.profiles) afterProfiles.set(id, content);
+    // 逆序逐条回放：从最新记录往前，每条都用它自己的"写入前"快照覆盖目标。
+    // 这样 N 条记录期间被创建/删除的每个方案文件都会回到 N 步前的状态，
+    // 而不是只回放最旧一条记录所触及的方案。
+    let targetHosts = currentHosts;
+    let targetStateRaw = currentState;
+    const targetProfilesFull = new Map(currentProfiles);
+    const touchedProfiles = new Set<string>();
+    for (const record of [...selected].reverse()) {
+      const snapshot = await readVerifiedSnapshot(workspace, record);
+      targetHosts = snapshot.hosts;
+      targetStateRaw = snapshot.state;
+      for (const [id, content] of snapshot.profiles) {
+        targetProfilesFull.set(id, content);
+        touchedProfiles.add(id);
+      }
+    }
+
+    const parsedTarget = parseStateBytes(targetStateRaw);
+    const sanitized = sanitizeRestoredState(parsedTarget, workspace.now);
+    if (sanitized.deadSessionLayerIds.length > 0 || sanitized.droppedTtl > 0) {
+      targetStateRaw = serializeState(sanitized.state);
+      for (const layerId of sanitized.deadSessionLayerIds) {
+        targetProfilesFull.set(layerId, null);
+        touchedProfiles.add(layerId);
+      }
+      if (sanitized.deadSessionLayerIds.length > 0) {
+        warnings.push(
+          `撤销目标包含 ${sanitized.deadSessionLayerIds.length} 个 pid 已退出的 run 会话，已丢弃租约并清理对应方案文件。`,
+        );
+      }
+      if (sanitized.droppedTtl > 0) {
+        warnings.push(
+          `撤销目标包含 ${sanitized.droppedTtl} 条已到期 TTL，已丢弃记录（不再重新计时）。`,
+        );
+      }
+    }
+
+    const targetProfiles = new Map<string, Buffer | null>();
+    for (const id of touchedProfiles) {
+      targetProfiles.set(id, targetProfilesFull.get(id) ?? null);
+    }
+
+    const target: ApplyUndoTarget = {
+      hosts: targetHosts,
+      state: targetStateRaw,
+      profiles: targetProfiles,
+    };
 
     const targetHostsText = target.hosts?.toString('utf8') ?? '';
     const currentHostsText = currentHosts?.toString('utf8') ?? '';
@@ -329,15 +464,39 @@ export async function undoHosts(options: UndoOptions = {}): Promise<UndoResult> 
           state: target.state,
           profiles: target.profiles,
         }).catch(() => undefined);
+        const failureDetail = `撤销后解析验证失败（${verification.failures.length} 个域名），已回滚到撤销前内容。`;
+        await appendAudit(
+          workspace.paths.auditPath,
+          {
+            at: workspace.now.toISOString(),
+            action: 'verify-rollback',
+            ok: false,
+            hostsPath: workspace.hostsPath,
+            checked: verification.checked,
+            failures: verification.failures,
+            command: 'undo',
+            commandArgs: ['--steps', String(steps)],
+            operator: currentOperator(),
+            beforeSha256: hashBytes(currentHosts),
+            afterSha256: hashBytes(target.hosts),
+            detail: failureDetail,
+          },
+          { keep: workspace.config.defaults.auditKeep },
+        ).catch(async (error) => {
+          await recordAuditFailure(workspace.dataDir, {
+            at: workspace.now.toISOString(),
+            command: 'undo',
+            detail: `verify-rollback: ${String(error)}`,
+          });
+          warnings.push('撤销验证失败的回滚事件未能写入审计，已记录为未审计操作。');
+        });
         await logRuntime(workspace, {
           level: 'warn',
           command: 'undo',
           event: 'rollback',
-          detail: '撤销后解析验证失败，已回滚到撤销前内容。',
+          detail: failureDetail,
         });
-        throw new VerificationError(
-          `撤销后解析验证失败（${verification.failures.length} 个域名），已回滚到撤销前内容。`,
-        );
+        throw new VerificationError(failureDetail);
       }
     }
 
@@ -364,7 +523,7 @@ export async function undoHosts(options: UndoOptions = {}): Promise<UndoResult> 
         beforeStateRaw: currentState,
         afterStateRaw: target.state,
         beforeProfiles: currentProfiles,
-        afterProfiles,
+        afterProfiles: targetProfilesFull,
         hostsBefore: managedEntries(currentHosts, workspace.platformId),
         hostsAfter: managedEntries(target.hosts, workspace.platformId),
         stateBefore: parseStateBytes(currentState),

@@ -52,7 +52,7 @@ export interface HistoryRecord {
   before: HistoryFingerprint;
   after: HistoryFingerprint;
   summary: ChangeSummary;
-  /** 本次 undo 撤销（消费）的历史记录 ID，按从新到旧排列。 */
+  /** 本次 undo 撤销（消费）的历史记录 ID，按旧 → 新排列。 */
   consumes?: string[];
   /** 写入者；与审计记录保持一致。 */
   operator?: { uid: number | null; username: string | null };
@@ -134,7 +134,7 @@ export async function readHistory(dataDir: string): Promise<HistoryRecord[]> {
   return records;
 }
 
-/** 从新到旧返回尚未被 undo 消费的记录。 */
+/** 按 journal 顺序（旧 → 新）返回尚未被 undo 消费的记录。 */
 export function availableHistory(records: HistoryRecord[]): HistoryRecord[] {
   const consumed = new Set<string>();
   for (const record of records) {
