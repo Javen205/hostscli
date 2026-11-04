@@ -352,7 +352,7 @@ $HCLI run gc [--dry-run] [--json]
 | `git status` / `log` / `diff` | 否 | 否 | 否 | 否 |
 | `git init` / `snapshot` | 是（数据目录内 `.git`） | 是 | 否（git 历史即回滚点） | 是 |
 | `git rollback` | 是（数据目录；默认重建 hosts） | 是 | 部分（hosts 重建可 undo；仓库回滚不可） | 是 |
-| `export` | 是（仅用户 `--out` 指定文件） | 否（见下） | 否 | 是（event=export） |
+| `export` | 是（用户 `--out` 指定文件 + 运行日志） | 否（见下） | 否 | 是（event=export） |
 | `audit list` / `show` / `verify` | 否 | 否 | 否 | 否 |
 | `audit export` | 否（只写 stdout） | 否 | 否 | 否 |
 | `undo` | 是（hosts/state/profiles） | 是（undo-ok） | 是（可再撤销） | 是 |
@@ -361,9 +361,9 @@ $HCLI run gc [--dry-run] [--json]
 | `run gc` | 是（hosts/state/profiles） | 是 | 是 | 是 |
 | `completion` | 否 | 否 | 否 | 否 |
 
-两条口径说明：
+口径说明：
 
-- `export` 写入的是**用户指定路径**的文件，可能位于数据目录之外，内容只是数据目录的只读快照；把它塞进审计链会让"审计 = 对托管状态的写入"这一语义失真，也未改变任何受管状态。因此只记运行日志（`event=export`），不入审计链。`audit export` 仅写 stdout，同样不审计。
+- `export` 写入的是**用户指定路径**的文件，可能位于数据目录之外，内容只是数据目录的只读快照；它不改受管状态（hosts/state/profiles），唯一的数据目录副作用是运行日志。把它塞进审计链会让"审计 = 对托管状态的写入"这一语义失真。因此只记运行日志（`event=export`），不入审计链。`audit export` 仅写 stdout，同样不审计。
 - `dns flush` 是系统缓存副作用，不读写数据目录，没有可审计的状态变更；失败会以 `NETWORK` 错误返回。
 - 审计写入失败沿用统一策略：主操作成功 + `audit-unaudited.jsonl` 标记 + warning，不阻断；运行日志写失败直接忽略。
 
