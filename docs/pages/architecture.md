@@ -140,7 +140,7 @@ cache/remote/        远程订阅内容与 ETag
 audit.log            JSONL 审计（结构化写入记录，0600）
 audit-unaudited.jsonl 审计写入失败的补记标记（0600）
 logs/run.jsonl       普通运行日志（JSONL，0600，按 logging.keep 轮转）
-.git/                可选，git 快照仓库（不包含 cache/backups/history/审计）
+.git/                可选，git 快照仓库（不包含 cache/backups/history/logs/审计）
 ```
 
 跨进程锁放在系统临时目录 `hostscli-locks/`，避免系统 hosts 不可写时无法加锁。工作区锁按排序同时获取 `lockPathFor(hostsPath)` 与 `lockPathForDataDir(dataDir)`，覆盖"读 - 改 - 写 - 校验 - 持久化"全过程；配置文件在锁外加载，避免锁内再取锁。

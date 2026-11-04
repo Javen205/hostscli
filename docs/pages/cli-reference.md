@@ -157,7 +157,7 @@ $HCLI profile update <id> [--name <name>] [--priority <n>] [--json]
 $HCLI profile remove <id> [--yes] [--json]
 ```
 
-生效中的方案不能删除；`use` 只保留目标方案为 active layer。
+生效中的方案不能删除；`use` 只保留目标方案为 active layer。`save` 仅允许把当前托管区存回**唯一生效**的方案，否则以 `INVALID_INPUT` 拒绝，避免覆盖其他层的规则。
 
 ### 4.7 `ttl`
 
@@ -172,7 +172,7 @@ $HCLI ttl cancel <hostname> [--layer <id>] [--dry-run]
 $HCLI ttl tick [--json]
 ```
 
-时长格式：`30m`、`2h`、`3d`、`1h30m`；最小 1 分钟，不支持小数。
+时长格式：`30m`、`90s`、`2h`、`3d`、`1h30m`（支持 `s` / `m` / `h` / `d` 组合）；总时长最小 1 分钟，不支持小数。
 
 ### 4.8 `stack`
 
@@ -258,12 +258,14 @@ remote.maxBytes                remote.timeoutMs
 $HCLI git init
 $HCLI git status
 $HCLI git snapshot [-m <text>]
-$HCLI git log [--limit <n>]
+$HCLI git log [--limit <n>]      # 1–200，默认 20
 $HCLI git diff [--rev <hash>]
 $HCLI git rollback <rev> [--no-rebuild] [--file <path>] [--data-dir <path>]
 ```
 
 仓库位于数据目录内，不触碰系统 hosts。`rollback` 默认重建 hosts；`--no-rebuild` 只恢复数据目录。回滚前若有未快照变更，会先自动提交保护快照。
+
+`audit.log`、`audit-unaudited.jsonl`、`cache/`、`backups/`、`history/`、`logs/` 不进入快照；其中 `logs/run.jsonl` 是 append-only 运行日志，旧仓库若曾跟踪 `logs/`，下一次 `snapshot` 会把它们移出索引（不删除工作区文件），保证回滚不会截断日志。
 
 `--file` 指定重建目标 hosts（默认沿用配置的 `hostsPath`）。若数据目录已回滚但 hosts 重建失败，命令以 `CONFLICT` 退出并提示"数据目录已回滚，需执行 `hostscli apply` 恢复一致性"，不会静默半成功。
 
@@ -279,7 +281,7 @@ $HCLI completion bash|zsh|fish
 ### 4.16 `audit`
 
 ```bash
-$HCLI audit list [--limit <n>] [--since <time>] [--until <time>]
+$HCLI audit list [--limit <n>] [--since <time>] [--until <time>]   # limit 1–1000，默认 20
                 [--command <name>] [--result ok|failed] [--json]
 $HCLI audit show <id> [--json]
 $HCLI audit verify [--json]
@@ -319,6 +321,7 @@ $HCLI run gc [--file <path>] [--data-dir <path>] [--dry-run] [--force] [--json]
 ```
 
 - `--file` / `--data-dir` 声明在父命令 `run` 上，`run`、`run list`、`run gc` 三种形态都从父命令读取，不会被子命令覆盖成默认值。
+- 工作区选项必须写在 `--` 之前：`--` 之后的内容会原样交给子进程，写成 `run ... -- sleep 0 --file ...` 会让 `--file` 被 `sleep` 吃掉，从而落到默认系统 hosts。
 - 命令存活期间，临时条目以最高优先级生效；子进程正常退出、异常退出或被 SIGINT / SIGTERM / SIGHUP 中止后自动移除条目并清理会话方案。
 - 命令不存在或启动失败时不会写入临时条目。
 - 会话以 `session-<hex>` 命名并写入 `state.sessions` 租约，父进程被强杀时可执行 `run list` 查看、`run gc` 回收。
@@ -397,7 +400,7 @@ $HCLI run gc [--file <path>] [--data-dir <path>] [--dry-run] [--force] [--json]
 
 | 现象 / 错误码 | 原因 | 处理 |
 | --- | --- | --- |
-| `PERMISSION`（4） | 对系统 hosts 无写权限 | 用 `sudo hostscli ...`；Windows 以管理员终端运行 |
+| `PERMISSION`（4） | 对系统 hosts 或数据目录无写权限 | 检查 `--file` / `--data-dir` 及其父目录权限；系统 hosts 用 `sudo hostscli ...`；Windows 以管理员终端运行 |
 | `HOSTS_FORMAT`（7）：围栏必须恰好各出现一次 | 起止围栏重复 / 缺失 / 顺序颠倒 | 用 `--dry-run` 查看；修正围栏或先 `restore` |
 | `INVALID_INPUT`（2）：同一规则集内 x 同时映射到 A 与 B | 方案内同层重复主机名映射 | 编辑 `profiles/<id>.json` 或重新 `profile create --from-current` |
 | `CONFLICT`（3） | 同优先级多层映射同一域名到不同 IP | 调整 `priority`，或 `--on-conflict highest-priority/first-wins/last-wins` |
