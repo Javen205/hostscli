@@ -70,6 +70,7 @@ export function workspaceOptions(options: CommonOptions): WorkspaceOptions {
     ...(options.dryRun ? { dryRun: true } : {}),
     ...(options.skipDnsFlush ? { dnsFlush: false } : {}),
     ...(options.verify ? { verify: true } : {}),
+    onWarning: (message) => process.stderr.write(pc.yellow(`警告：${message}\n`)),
   };
 }
 

@@ -29,6 +29,8 @@ export interface WorkspaceOptions {
   verify?: boolean;
   /** 测试注入解析函数（verify 用）；生产环境不要设置。 */
   verifyLookup?: (hostname: string) => Promise<Array<{ address: string; family: number }>>;
+  /** 读取配置时产生的非致命警告（例如旧版已移除的配置键）。 */
+  onWarning?: (message: string) => void;
 }
 
 export interface Workspace {
@@ -58,7 +60,9 @@ export interface LoadedHosts {
 export async function openWorkspace(options: WorkspaceOptions = {}): Promise<Workspace> {
   const env = options.env ?? process.env;
   const initialPaths = resolveDataPaths({ dataDir: options.dataDir, env });
-  const config = await loadConfig(initialPaths.configPath, env);
+  const config = await loadConfig(initialPaths.configPath, env, {
+    ...(options.onWarning !== undefined ? { onWarning: options.onWarning } : {}),
+  });
   const paths = resolveDataPaths({
     dataDir: options.dataDir,
     env,

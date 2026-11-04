@@ -12,6 +12,7 @@ export async function readJsonOrDefault<T>(
   filePath: string,
   schema: ZodType<T>,
   fallback: () => T,
+  onRaw?: (value: unknown) => void,
 ): Promise<T> {
   let raw: string;
   try {
@@ -42,6 +43,7 @@ export async function readJsonOrDefault<T>(
     );
   }
 
+  onRaw?.(parsed);
   return result.data;
 }
 

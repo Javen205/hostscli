@@ -43,7 +43,7 @@ import {
   extendTtl,
   tickTtl,
 } from '../index';
-import { expandHome } from '../storage/config';
+import { configKeys, expandHome, loadConfig } from '../storage/config';
 
 function sha256(value: string | Buffer): string {
   return createHash('sha256').update(value).digest('hex');
@@ -965,12 +965,42 @@ describe('存储与配置健壮性', () => {
     await expect(updateConfig('defaults.dnsFlush', 'nope', options())).rejects.toBeInstanceOf(
       InvalidInputError,
     );
-    await expect(updateConfig('ttl.tickInterval', '30s', options())).rejects.toBeInstanceOf(
+    await expect(updateConfig('ttl.timerMode', 'timer', options())).rejects.toBeInstanceOf(
       InvalidInputError,
     );
     await expect(updateConfig('profilesDir', '../escape', options())).rejects.toBeInstanceOf(
       InvalidInputError,
     );
+  });
+
+  it('已移除的配置键被忽略并产生 warning，不影响读取', async () => {
+    await mkdir(dataDir, { recursive: true });
+    const configPath = join(dataDir, 'config.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        defaults: { auditKeep: 10 },
+        ttl: { timerMode: 'timer', tickInterval: '30s' },
+        output: { format: 'json', color: 'always' },
+      }),
+    );
+    const warnings: string[] = [];
+    const config = await loadConfig(
+      configPath,
+      {},
+      { onWarning: (message) => warnings.push(message) },
+    );
+    expect(config.defaults.auditKeep).toBe(10);
+    expect(config).not.toHaveProperty('ttl');
+    expect(config).not.toHaveProperty('output');
+    expect(warnings).toHaveLength(4);
+    expect(warnings.join('\n')).toContain('ttl.timerMode');
+
+    expect(configKeys()).not.toContain('ttl.timerMode');
+    expect(configKeys()).not.toContain('ttl.tickInterval');
+    expect(configKeys()).not.toContain('output.format');
+    expect(configKeys()).not.toContain('output.color');
   });
 
   it('config 支持 hostsPath 与 ~ 展开', async () => {

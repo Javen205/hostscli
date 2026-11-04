@@ -50,20 +50,6 @@ const defaultsSchema = z
     historyKeep: 30,
   }));
 
-const ttlConfigSchema = z
-  .object({
-    timerMode: z.enum(['lazy', 'tick', 'timer']).default('lazy'),
-    tickInterval: z.string().default('1m'),
-  })
-  .default(() => ({ timerMode: 'lazy' as const, tickInterval: '1m' }));
-
-const outputSchema = z
-  .object({
-    format: z.enum(['table', 'json']).default('table'),
-    color: z.enum(['auto', 'always', 'never']).default('auto'),
-  })
-  .default(() => ({ format: 'table' as const, color: 'auto' as const }));
-
 const loggingSchema = z
   .object({
     /** 运行日志默认开启：只记命令/事件/结果，不含业务数据正文。 */
@@ -107,9 +93,7 @@ export const configSchema = z
     /** null 表示按平台解析系统 hosts 路径。 */
     hostsPath: z.string().min(1).nullable().default(null),
     defaults: defaultsSchema,
-    ttl: ttlConfigSchema,
     profilesDir: z.string().min(1).default('profiles'),
-    output: outputSchema,
     logging: loggingSchema,
     remote: remoteConfigSchema,
     network: networkConfigSchema,
@@ -122,12 +106,45 @@ export function defaultConfig(): HostsCliConfig {
   return configSchema.parse({});
 }
 
+/**
+ * 已移除的空转配置项。读取旧 config 时忽略并给出 warning，
+ * 不因它们校验失败或让命令退出。
+ */
+const REMOVED_CONFIG_KEYS = [
+  'ttl.timerMode',
+  'ttl.tickInterval',
+  'output.format',
+  'output.color',
+] as const;
+
+function warnRemovedConfigKeys(raw: unknown, onWarning?: (message: string) => void): void {
+  if (onWarning === undefined || raw === null || typeof raw !== 'object') return;
+  const root = raw as Record<string, unknown>;
+  for (const key of REMOVED_CONFIG_KEYS) {
+    const dot = key.indexOf('.');
+    const group = key.slice(0, dot);
+    const name = key.slice(dot + 1);
+    const section = root[group];
+    if (section !== null && typeof section === 'object' && name in section) {
+      onWarning(`配置项 ${key} 已移除，当前值被忽略；可用 config show 确认生效配置。`);
+    }
+  }
+}
+
 export async function loadConfig(
   configPath: string,
   env: NodeJS.ProcessEnv = process.env,
+  options: { onWarning?: (message: string) => void } = {},
 ): Promise<HostsCliConfig> {
   const fallback = () => defaultConfig();
-  const config = await readJsonOrDefault(configPath, configSchema, fallback);
+  const config = await readJsonOrDefault(configPath, configSchema, fallback, (raw) =>
+    warnRemovedConfigKeys(raw, options.onWarning),
+  );
+
+  // schema 是 passthrough：旧文件里的 ttl / output 会被保留在解析结果中，
+  // 这里显式丢弃，避免 config show 继续展示"写了但不生效"的键。
+  delete (config as unknown as Record<string, unknown>).ttl;
+  delete (config as unknown as Record<string, unknown>).output;
 
   if (config.hostsPath) {
     config.hostsPath = expandHome(config.hostsPath, env);
@@ -183,17 +200,8 @@ const NUMBER_KEYS = new Set([
   'remote.timeoutMs',
   'remote.maxBytes',
 ]);
-const STRING_KEYS = new Set([
-  'hostsPath',
-  'profilesDir',
-  'defaults.ttlWarnThreshold',
-  'ttl.tickInterval',
-]);
-const ENUM_KEYS: Record<string, string[]> = {
-  'ttl.timerMode': ['lazy', 'tick', 'timer'],
-  'output.format': ['table', 'json'],
-  'output.color': ['auto', 'always', 'never'],
-};
+const STRING_KEYS = new Set(['hostsPath', 'profilesDir', 'defaults.ttlWarnThreshold']);
+const ENUM_KEYS: Record<string, string[]> = {};
 
 export function configKeys(): string[] {
   return [...BOOLEAN_KEYS, ...NUMBER_KEYS, ...STRING_KEYS, ...Object.keys(ENUM_KEYS)].sort();
@@ -243,7 +251,7 @@ export function setConfigValue(
     if (rawValue === '' && key !== 'hostsPath') {
       throw new InvalidInputError(`${key} 不能为空。`);
     }
-    if (key === 'defaults.ttlWarnThreshold' || key === 'ttl.tickInterval') {
+    if (key === 'defaults.ttlWarnThreshold') {
       parseDuration(rawValue);
     }
     if (key === 'profilesDir') {
