@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -510,6 +511,57 @@ describe('阶段 4：数据目录 git 快照', () => {
       await env.cleanup();
     }
   });
+
+  it('运行日志保持 append-only：不进入快照，旧仓库中被跟踪的 logs/ 会被移出索引', async () => {
+    const env = await makeEnv();
+    const gitArgs = [`--git-dir=${join(env.dataDir, '.git')}`, `--work-tree=${env.dataDir}`];
+    try {
+      await gitInit(env.options());
+      await gitSnapshot({ ...env.options(), message: 'base' });
+      const excludePath = join(env.dataDir, '.git', 'info', 'exclude');
+      expect((await readFile(excludePath, 'utf8')).split(/\r?\n/)).toContain('logs/');
+
+      const logsDir = join(env.dataDir, 'logs');
+      const logPath = join(logsDir, 'run.jsonl');
+      await mkdir(logsDir, { recursive: true, mode: 0o700 });
+      await writeFile(logPath, '{"command":"add"}\n', { mode: 0o600 });
+
+      // 模拟旧版本仓库：logs/ 曾被纳入版本管理。
+      execFileSync('git', [...gitArgs, 'add', '-f', '--', 'logs'], { stdio: 'ignore' });
+      execFileSync(
+        'git',
+        [
+          ...gitArgs,
+          '-c',
+          'user.name=hostscli',
+          '-c',
+          'user.email=hostscli@local',
+          'commit',
+          '--quiet',
+          '-m',
+          'track logs',
+        ],
+        { stdio: 'ignore' },
+      );
+      expect(
+        execFileSync('git', [...gitArgs, 'ls-files', '--', 'logs'], { encoding: 'utf8' }).trim(),
+      ).not.toBe('');
+
+      // 下一次快照必须在同一次提交里把 logs/ 移出索引，但保留工作区文件内容。
+      await gitSnapshot({ ...env.options(), message: 'untrack logs' });
+      expect(
+        execFileSync('git', [...gitArgs, 'ls-files', '--', 'logs'], { encoding: 'utf8' }).trim(),
+      ).toBe('');
+      // 日志只能追加：快照自身会写日志，但原有内容不能被回滚或截断。
+      expect((await readFile(logPath, 'utf8')).startsWith('{"command":"add"}\n')).toBe(true);
+
+      // 移出索引后继续追加日志，不应被算作未快照变更。
+      await appendFile(logPath, '{"command":"list"}\n');
+      expect((await gitStatusOf(env.options())).dirty).toBe(false);
+    } finally {
+      await env.cleanup();
+    }
+  }, 30_000);
 });
 
 describe('阶段 4：数据导出', () => {

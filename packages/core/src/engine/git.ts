@@ -108,12 +108,63 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * 不进入快照的运行态路径：审计、缓存、备份、undo 历史与普通运行日志。
+ * `logs/` 必须排除，否则 `git rollback` 会把 append-only 运行日志一并回滚，
+ * 违反“日志只追加”的承诺。
+ */
+const EXCLUDED_PATHS = [
+  'audit.log',
+  'audit-unaudited.jsonl',
+  'cache/',
+  'backups/',
+  'history/',
+  'logs/',
+];
+
+/** 补齐 exclude 规则；旧仓库中被跟踪的 logs/ 由 commitWorkTree 移出索引。 */
+async function ensureExcludeFile(dataDir: string): Promise<void> {
+  const excludePath = join(gitDirFor(dataDir), 'info', 'exclude');
+  let existing = '';
+  try {
+    existing = await readFile(excludePath, 'utf8');
+  } catch {
+    // 新仓库可能还没有 exclude 文件。
+  }
+  const lines = new Set(
+    existing
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean),
+  );
+  const missing = EXCLUDED_PATHS.filter((path) => !lines.has(path));
+  if (missing.length > 0) {
+    const separator = existing === '' || existing.endsWith('\n') ? '' : '\n';
+    await writeFile(excludePath, `${existing}${separator}${missing.join('\n')}\n`, {
+      mode: 0o600,
+    });
+  }
+}
+
+/**
+ * 把旧仓库里已被跟踪的 `logs/` 移出索引（不删工作区文件）。
+ * 由提交路径调用，保证“移出索引”与提交发生在同一次快照里，
+ * 不会让 `git status` 在两次快照之间残留一条暂存删除。
+ */
+async function untrackRuntimeLogs(dataDir: string, runner: GitRunner): Promise<void> {
+  const tracked = await runner([...baseArgs(dataDir), 'ls-files', '--', 'logs']);
+  if (tracked.trim() !== '') {
+    await runner([...baseArgs(dataDir), 'rm', '--cached', '-r', '--quiet', '--', 'logs']);
+  }
+}
+
 async function ensureRepo(options: GitOptions): Promise<void> {
   const gitDir = gitDirFor(options.dataDir);
   const runner = options.runner ?? defaultRunner(options.dataDir);
 
   if (await exists(join(gitDir, MARKER_NAME))) {
     await assertMarker(options.dataDir);
+    await ensureExcludeFile(options.dataDir);
     return;
   }
   if (await exists(join(gitDir, 'HEAD'))) {
@@ -140,12 +191,7 @@ async function ensureRepo(options: GitOptions): Promise<void> {
   await runner([...baseArgs(options.dataDir), 'config', 'core.hooksPath', join(gitDir, 'hooks')]);
 
   await writeFile(markerPathFor(options.dataDir), MARKER_CONTENT, { mode: 0o600 });
-  // audit / cache / backups 体积大或含运行态，不进入快照。
-  await writeFile(
-    join(gitDir, 'info', 'exclude'),
-    ['audit.log', 'audit-unaudited.jsonl', 'cache/', 'backups/', 'history/'].join('\n') + '\n',
-    { mode: 0o600 },
-  );
+  await ensureExcludeFile(options.dataDir);
 }
 
 function normalizeMessage(message: string | undefined): string {
@@ -157,6 +203,8 @@ function normalizeMessage(message: string | undefined): string {
 /** 把当前工作区提交为快照；没有变更时返回 null。调用方必须已持有工作区锁。 */
 async function commitWorkTree(dataDir: string, message: string): Promise<string | null> {
   const runner = defaultRunner(dataDir);
+  // append-only 运行日志不能被回滚：若旧快照已跟踪 logs/，在同一次提交里移出索引。
+  await untrackRuntimeLogs(dataDir, runner);
   const status = await runner([...baseArgs(dataDir), 'status', '--porcelain']);
   if (status.trim() === '') return null;
 
