@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import {
   addWorkspaceOptions,
   confirm,
+  parseIntOption,
   printJson,
   printWarnings,
   resolveTargetPath,
@@ -14,7 +15,7 @@ export function registerRestoreCommand(program: Command): void {
     json: true,
   })
     .option('--from <file>', '指定备份文件（默认最近一份）')
-    .option('--keep <n>', '恢复前保留最近 N 份备份', (value) => Number.parseInt(value, 10))
+    .option('--keep <n>', '恢复前保留最近 N 份备份', parseIntOption('--keep', { min: 0 }))
     .option('--yes', '跳过确认')
     .action(async (options) => {
       if (!options.yes && !options.json) {

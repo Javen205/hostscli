@@ -1,28 +1,11 @@
 import type { Command } from 'commander';
+import { COMMAND_ENTRIES } from '../command-manifest';
 
-const COMMANDS = [
-  'list',
-  'add',
-  'remove',
-  'enable',
-  'disable',
-  'init',
-  'apply',
-  'backup',
-  'restore',
-  'profile',
-  'ttl',
-  'stack',
-  'doctor',
-  'remote',
-  'dns',
-  'config',
-  'network',
-  'git',
-  'export',
-  'audit',
-  'completion',
-] as const;
+/**
+ * 直接取命令清单，避免补全脚本与真实命令列表漂移
+ * （此前手工维护的列表漏掉了 run / undo）。
+ */
+const COMMANDS = COMMAND_ENTRIES.map((entry) => entry.name);
 
 const BASH_SCRIPT = `# hostscli bash completion
 _hostscli_completions() {

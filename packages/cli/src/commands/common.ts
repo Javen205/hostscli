@@ -108,21 +108,47 @@ export async function resolveTargetPath(
   return config.hostsPath ?? resolveHostsPath();
 }
 
-/** commander 选项解析器：拒绝 NaN / 小数 / 带后缀的优先级。 */
+/**
+ * commander 选项解析器：拒绝 NaN / 小数 / 带后缀的整数值。
+ * 不能用 Number.parseInt：它会把 `12abc` 截成 12、把 `abc` 变成 NaN，
+ * 调用方再按 NaN 做静默回退，用户就会以为参数已生效。
+ */
+export function parseIntOption(
+  label: string,
+  range: { min?: number; max?: number } = {},
+): (value: string) => number {
+  return (value: string): number => {
+    const trimmed = value.trim();
+    if (!/^-?\d+$/.test(trimmed)) {
+      throw Object.assign(new Error(`${label} 必须是整数，收到：${value}`), {
+        code: 'INVALID_INPUT',
+      });
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isSafeInteger(parsed)) {
+      throw Object.assign(new Error(`${label} 超出安全整数范围，收到：${value}`), {
+        code: 'INVALID_INPUT',
+      });
+    }
+    const { min, max } = range;
+    if ((min !== undefined && parsed < min) || (max !== undefined && parsed > max)) {
+      const bounds =
+        min !== undefined && max !== undefined
+          ? `${min}–${max}`
+          : min !== undefined
+            ? `不小于 ${min}`
+            : `不大于 ${max}`;
+      throw Object.assign(new Error(`${label} 必须在 ${bounds} 之间，收到：${value}`), {
+        code: 'INVALID_INPUT',
+      });
+    }
+    return parsed;
+  };
+}
+
+/** commander 选项解析器：优先级为任意安全整数（可正可负）。 */
 export function parsePriorityOption(value: string): number {
-  const trimmed = value.trim();
-  if (!/^-?\d+$/.test(trimmed)) {
-    throw Object.assign(new Error(`--priority 必须是整数，收到：${value}`), {
-      code: 'INVALID_INPUT',
-    });
-  }
-  const parsed = Number(trimmed);
-  if (!Number.isSafeInteger(parsed)) {
-    throw Object.assign(new Error(`--priority 超出安全整数范围，收到：${value}`), {
-      code: 'INVALID_INPUT',
-    });
-  }
-  return parsed;
+  return parseIntOption('--priority')(value);
 }
 
 /** commander 选项解析器：拒绝空名称（含纯空白）。 */

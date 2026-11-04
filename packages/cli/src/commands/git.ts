@@ -3,6 +3,7 @@ import pc from 'picocolors';
 import {
   addDataDirOption,
   addWorkspaceOptions,
+  parseIntOption,
   printJson,
   printWarnings,
   workspaceOptions,
@@ -63,14 +64,16 @@ export function registerGitCommand(program: Command): void {
     });
 
   addDataDirOption(git.command('log').description('列出快照历史'), { json: true })
-    .option('--limit <n>', '最多显示条数（1–200，默认 20）', (value) => Number.parseInt(value, 10))
+    .option(
+      '--limit <n>',
+      '最多显示条数（1–200，默认 20）',
+      parseIntOption('--limit', { min: 1, max: 200 }),
+    )
     .action(async (options) => {
       const { gitLog } = await import('@hostscli/core/git');
       const result = await gitLog({
         ...workspaceOptions({ dataDir: options.dataDir }),
-        ...(options.limit !== undefined && !Number.isNaN(options.limit)
-          ? { limit: options.limit }
-          : {}),
+        ...(options.limit !== undefined ? { limit: options.limit } : {}),
       });
       if (options.json) {
         printJson(result);

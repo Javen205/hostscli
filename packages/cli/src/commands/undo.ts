@@ -1,6 +1,12 @@
 import type { Command } from 'commander';
 import pc from 'picocolors';
-import { addWorkspaceOptions, printJson, printWarnings, workspaceOptions } from './common';
+import {
+  addWorkspaceOptions,
+  parseIntOption,
+  printJson,
+  printWarnings,
+  workspaceOptions,
+} from './common';
 
 export function registerUndoCommand(program: Command): void {
   const command = program
@@ -9,7 +15,7 @@ export function registerUndoCommand(program: Command): void {
     .option(
       '--steps <n>',
       '撤销最近多少次写入（1–100，默认 1）',
-      (value) => Number.parseInt(value, 10),
+      parseIntOption('--steps', { min: 1, max: 100 }),
       1,
     );
   addWorkspaceOptions(command, { json: true, dryRun: true, verify: true }).action(

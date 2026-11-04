@@ -1,6 +1,13 @@
 import type { Command } from 'commander';
 import pc from 'picocolors';
-import { addDataDirOption, printJson, printWarnings, workspaceOptions } from './common';
+import {
+  addDataDirOption,
+  parseIntOption,
+  parsePriorityOption,
+  printJson,
+  printWarnings,
+  workspaceOptions,
+} from './common';
 
 export function registerRemoteCommand(program: Command): void {
   const remote = program.command('remote').description('管理远程 hosts 订阅（拉取为规则层）');
@@ -11,7 +18,7 @@ export function registerRemoteCommand(program: Command): void {
     .requiredOption('--url <url>', '订阅地址（http/https）')
     .option('--profile <id>', '生成的方案 ID（默认与订阅 ID 相同）')
     .option('--name <name>', '方案显示名')
-    .option('--priority <n>', '方案优先级', (value) => Number.parseInt(value, 10))
+    .option('--priority <n>', '方案优先级', parsePriorityOption)
     .option('--activate', '同时把该方案加入启用集合')
     .option('--disabled', '登记为停用（remote update 默认跳过）')
     .action(async (id: string, options) => {
@@ -22,9 +29,7 @@ export function registerRemoteCommand(program: Command): void {
         url: options.url,
         ...(options.profile !== undefined ? { profileId: options.profile } : {}),
         ...(options.name !== undefined ? { name: options.name } : {}),
-        ...(options.priority !== undefined && !Number.isNaN(options.priority)
-          ? { priority: options.priority }
-          : {}),
+        ...(options.priority !== undefined ? { priority: options.priority } : {}),
         enabled: !options.disabled,
         activate: Boolean(options.activate),
       });
@@ -93,20 +98,16 @@ export function registerRemoteCommand(program: Command): void {
     { json: true },
   )
     .option('--force', '忽略 ETag/Last-Modified 与内容哈希，强制重新下载')
-    .option('--timeout <ms>', '请求超时（毫秒）', (value) => Number.parseInt(value, 10))
-    .option('--max-bytes <n>', '响应体大小上限（字节）', (value) => Number.parseInt(value, 10))
+    .option('--timeout <ms>', '请求超时（毫秒）', parseIntOption('--timeout', { min: 1 }))
+    .option('--max-bytes <n>', '响应体大小上限（字节）', parseIntOption('--max-bytes', { min: 1 }))
     .action(async (id: string | undefined, options) => {
       const { updateRemoteSources } = await import('@hostscli/core/remote');
       const result = await updateRemoteSources({
         ...workspaceOptions({ dataDir: options.dataDir }),
         ...(id !== undefined ? { id } : {}),
         ...(options.force ? { force: true } : {}),
-        ...(options.timeout !== undefined && !Number.isNaN(options.timeout)
-          ? { timeoutMs: options.timeout }
-          : {}),
-        ...(options.maxBytes !== undefined && !Number.isNaN(options.maxBytes)
-          ? { maxBytes: options.maxBytes }
-          : {}),
+        ...(options.timeout !== undefined ? { timeoutMs: options.timeout } : {}),
+        ...(options.maxBytes !== undefined ? { maxBytes: options.maxBytes } : {}),
       });
 
       if (options.json) {

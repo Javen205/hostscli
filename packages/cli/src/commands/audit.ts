@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import pc from 'picocolors';
-import { addDataDirOption, printJson } from './common';
+import { addDataDirOption, parseIntOption, printJson } from './common';
 
 interface AuditListOptions {
   dataDir?: string;
@@ -51,7 +51,11 @@ export function registerAuditCommand(program: Command): void {
   addDataDirOption(audit.command('list').description('列出审计记录（支持时间/命令/结果过滤）'), {
     json: true,
   })
-    .option('--limit <n>', '最多显示条数（1–1000，默认 20）', (value) => Number.parseInt(value, 10))
+    .option(
+      '--limit <n>',
+      '最多显示条数（1–1000，默认 20）',
+      parseIntOption('--limit', { min: 1, max: 1000 }),
+    )
     .option('--since <time>', '起始时间（ISO 8601 或可解析日期）')
     .option('--until <time>', '截止时间（ISO 8601 或可解析日期）')
     .option('--command <name>', '按命令名精确过滤（例如 add / undo / run）')
@@ -62,8 +66,7 @@ export function registerAuditCommand(program: Command): void {
         import('@hostscli/core/storage'),
       ]);
       const paths = resolveDataPaths({ dataDir: options.dataDir });
-      const limit =
-        options.limit !== undefined && !Number.isNaN(options.limit) ? options.limit : 20;
+      const limit = options.limit ?? 20;
       if (options.result !== undefined && options.result !== 'ok' && options.result !== 'failed') {
         throw Object.assign(new Error('--result 只支持 ok 或 failed。'), { code: 'INVALID_INPUT' });
       }

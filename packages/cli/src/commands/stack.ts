@@ -4,6 +4,7 @@ import {
   addDataDirOption,
   addWorkspaceOptions,
   conflictStrategy,
+  parsePriorityOption,
   printJson,
   printMutation,
   printWarnings,
@@ -23,9 +24,7 @@ export function registerStackCommand(program: Command): void {
   )
     .option('--file <path>', '层文件路径（必填）')
     .option('--name <name>', '层显示名')
-    .option('--priority <n>', '优先级（越大越优先，默认取文件值或 0）', (value) =>
-      Number.parseInt(value, 10),
-    )
+    .option('--priority <n>', '优先级（越大越优先，默认取文件值或 0）', parsePriorityOption)
     .option('--force', '覆盖同名层')
     .option('--no-enable', '只导入，不加入启用集合')
     .action(async (id: string, options) => {
@@ -40,9 +39,7 @@ export function registerStackCommand(program: Command): void {
         id,
         file: options.file,
         ...(options.name !== undefined ? { name: options.name } : {}),
-        ...(options.priority !== undefined && !Number.isNaN(options.priority)
-          ? { priority: options.priority }
-          : {}),
+        ...(options.priority !== undefined ? { priority: options.priority } : {}),
         force: Boolean(options.force),
         enable: options.enable !== false,
       });

@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import pc from 'picocolors';
-import { addWorkspaceOptions, printJson, workspaceOptions } from './common';
+import { addWorkspaceOptions, parseIntOption, printJson, workspaceOptions } from './common';
 
 export function registerDoctorCommand(program: Command): void {
   addWorkspaceOptions(
@@ -10,9 +10,11 @@ export function registerDoctorCommand(program: Command): void {
     { json: true },
   )
     .option('--all', '诊断托管区块里的全部域名')
-    .option('--concurrency <n>', '并发上限（默认 4）', (value) => Number.parseInt(value, 10))
-    .option('--timeout <ms>', '单次 DNS 查询超时（默认 3000）', (value) =>
-      Number.parseInt(value, 10),
+    .option('--concurrency <n>', '并发上限（默认 4）', parseIntOption('--concurrency', { min: 1 }))
+    .option(
+      '--timeout <ms>',
+      '单次 DNS 查询超时（默认 3000）',
+      parseIntOption('--timeout', { min: 1 }),
     )
     .action(async (hostnames: string[], options) => {
       const { doctorHosts } = await import('@hostscli/core/doctor');
@@ -20,12 +22,8 @@ export function registerDoctorCommand(program: Command): void {
         ...workspaceOptions(options),
         ...(options.all ? { all: true } : {}),
         ...(hostnames.length > 0 ? { hostnames } : {}),
-        ...(options.concurrency !== undefined && !Number.isNaN(options.concurrency)
-          ? { concurrency: options.concurrency }
-          : {}),
-        ...(options.timeout !== undefined && !Number.isNaN(options.timeout)
-          ? { timeoutMs: options.timeout }
-          : {}),
+        ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
+        ...(options.timeout !== undefined ? { timeoutMs: options.timeout } : {}),
       });
 
       if (options.json) {

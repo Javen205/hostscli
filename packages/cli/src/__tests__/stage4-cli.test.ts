@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import { COMMAND_ENTRIES } from '../command-manifest';
 import { completionScript } from '../commands/completion';
-import { parseNameOption, parsePriorityOption } from '../commands/common';
+import { parseIntOption, parseNameOption, parsePriorityOption } from '../commands/common';
 import { serializeSnapshot } from '../commands/export';
 import { exitCodeFor } from '../errors';
 import { renderEntryTable } from '../output/table';
@@ -32,21 +33,11 @@ describe('阶段 4：CLI 导出格式与补全脚本', () => {
     expect(yaml.profiles[0].id).toBe('office');
   });
 
-  it('三种 shell 的补全脚本都覆盖全部一级命令', () => {
-    const commands = [
-      'list',
-      'add',
-      'remove',
-      'enable',
-      'disable',
-      'stack',
-      'doctor',
-      'network',
-      'git',
-      'export',
-      'audit',
-      'completion',
-    ];
+  it('三种 shell 的补全脚本都覆盖全部一级命令（含 run / undo）', () => {
+    // 直接以命令清单为准，补全列表漏项会让脚本测试失败而不是悄悄漂移。
+    const commands = COMMAND_ENTRIES.map((entry) => entry.name);
+    expect(commands).toContain('run');
+    expect(commands).toContain('undo');
     for (const shell of ['bash', 'zsh', 'fish'] as const) {
       const script = completionScript(shell);
       expect(script).toContain('hostscli');
@@ -54,6 +45,23 @@ describe('阶段 4：CLI 导出格式与补全脚本', () => {
     }
     expect(completionScript('bash')).toContain('complete -F _hostscli_completions hostscli');
     expect(completionScript('fish')).toContain('complete -c hostscli');
+  });
+
+  it('整数选项拒绝非整数、越界值，不再静默回退默认值', () => {
+    const limit = parseIntOption('--limit', { min: 1, max: 200 });
+    expect(limit('20')).toBe(20);
+    for (const value of ['abc', '12abc', '1.5', '', '201', '0', '-1']) {
+      const error = (() => {
+        try {
+          limit(value);
+          return null;
+        } catch (caught) {
+          return caught;
+        }
+      })();
+      expect(error).toMatchObject({ code: 'INVALID_INPUT' });
+    }
+    expect(parseIntOption('--keep', { min: 0 })('0')).toBe(0);
   });
 
   it('profile 参数解析拒绝空名称与非整数优先级', () => {
