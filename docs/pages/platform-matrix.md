@@ -14,7 +14,7 @@
 | --- | --- | --- | --- |
 | hosts 文件路径 | `/etc/hosts`（已验证） | `/etc/hosts`（容器已验证；CI 已验证测试路径） | `%SystemRoot%\System32\drivers\etc\hosts`（CI 已验证路径拼接与 smoke） |
 | 路径覆盖 | `--file` / `config.hostsPath`（已验证） | 同左（已验证） | 同左（CI 已验证） |
-| 直接写入权限检测 | `access(W_OK)`；提示 `sudo`（已验证） | 同左（容器默认 root，权限拒绝分支未验证） | `access(W_OK)`；提示管理员终端（CI 覆盖只读分支，不生效时记录跳过；真实提权未验证） |
+| 直接写入权限检测 | `access(W_OK)`；提示 `sudo`（已验证） | 同左（容器 root 下跳过权限用例；CI 非 root 已覆盖 PERMISSION 分支） | `access(W_OK)`；提示管理员终端（POSIX 只读分支在 Windows 上跳过；真实提权未验证） |
 | 原子写（临时文件 + fsync + rename） | 已验证 | 容器已验证 | CI 已验证基础路径（跳过目录 fsync；rename 遇 EBUSY/EPERM/EACCES 重试 3 次） |
 | 权限位保留 | 已验证（0640 夹具） | 容器已验证 | **不适用**（Windows ACL 不等于 POSIX mode） |
 | 默认行尾（仅新建行） | `\n`（已验证） | `\n`（已验证） | `\r\n`（CI 已验证） |
