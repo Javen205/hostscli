@@ -441,6 +441,36 @@ describe('阶段 4：数据目录 git 快照', () => {
     }
   }, 30_000);
 
+  it('git rollback 按 --file 指定的 hosts 重建，不触碰原目标', async () => {
+    const env = await makeEnv();
+    try {
+      await addLayer(env, 'office', '10.10.10.5', 10);
+      await gitInit(env.options());
+      const snapshot = await gitSnapshot({ ...env.options(), message: 'base' });
+      // 给原 hosts 打一个只属于它的标记：若 --file 被忽略、重建回落到原目标，
+      // 该标记会消失，测试即可发现。
+      await writeFile(env.hostsPath, `${await readFile(env.hostsPath, 'utf8')}# original-only\n`);
+      await addLayer(env, 'office', '10.20.20.5', 10);
+      const beforeOriginal = await readFile(env.hostsPath, 'utf8');
+      expect(beforeOriginal).toContain('# original-only');
+
+      const otherHosts = join(env.directory, 'other-hosts');
+      await writeFile(otherHosts, '127.0.0.1 localhost\n');
+      const rolled = await gitRollback({
+        ...env.options(),
+        filePath: otherHosts,
+        rev: (snapshot.commit as string).slice(0, 7),
+      });
+
+      expect(rolled.mutation?.changed).toBe(true);
+      expect(await readFile(otherHosts, 'utf8')).toContain('10.10.10.5');
+      // --file 只决定重建目标；原 hosts 不应被回滚逻辑改写。
+      expect(await readFile(env.hostsPath, 'utf8')).toBe(beforeOriginal);
+    } finally {
+      await env.cleanup();
+    }
+  }, 30_000);
+
   it('没有快照时 diff / rollback 返回可操作的 INVALID_INPUT', async () => {
     const env = await makeEnv();
     try {
