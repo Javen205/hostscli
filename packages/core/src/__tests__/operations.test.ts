@@ -149,6 +149,25 @@ describe('CRUD 与非托管区不变量', () => {
     expect(snapshot.summary.managed).toBe(2);
   });
 
+  it('数据目录不可写时返回 PERMISSION，而不是裸 EACCES（退出码 4）', async () => {
+    // root 会绕过目录权限，Windows 的 POSIX mode 不可靠，均跳过。
+    if (process.platform === 'win32' || process.getuid?.() === 0) return;
+    await writeFile(hostsPath, PLAIN_DOCUMENT);
+    await mkdir(dataDir, { recursive: true, mode: 0o700 });
+    await chmod(dataDir, 0o500);
+    try {
+      await expect(
+        addHosts({
+          ...options(),
+          ip: '10.0.0.21',
+          hostnames: ['denied.example.com'],
+        }),
+      ).rejects.toBeInstanceOf(PermissionError);
+    } finally {
+      await chmod(dataDir, 0o700).catch(() => undefined);
+    }
+  });
+
   it('add 追加托管区块，原文件字节保持不变，并生成备份', async () => {
     const source = Buffer.from(PLAIN_DOCUMENT);
     await writeFile(hostsPath, source);

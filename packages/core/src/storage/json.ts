@@ -2,7 +2,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { ZodType } from 'zod';
 import { StorageCorruptError, PermissionError } from '../errors';
-import { atomicWriteFile } from '../system/atomic-write';
+import { asWritePermissionError, atomicWriteFile } from '../system/atomic-write';
 
 /**
  * 读取并校验 JSON 文件。文件不存在时返回 `fallback`；存在但损坏时拒绝继续，
@@ -58,8 +58,14 @@ export async function writeJsonFile(
   value: unknown,
   options: { pretty?: boolean } = {},
 ): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
-  const text =
-    options.pretty === false ? `${JSON.stringify(value)}\n` : `${JSON.stringify(value, null, 2)}\n`;
-  await atomicWriteFile(filePath, Buffer.from(text, 'utf8'), { mode: 0o600 });
+  try {
+    await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
+    const text =
+      options.pretty === false
+        ? `${JSON.stringify(value)}\n`
+        : `${JSON.stringify(value, null, 2)}\n`;
+    await atomicWriteFile(filePath, Buffer.from(text, 'utf8'), { mode: 0o600 });
+  } catch (error) {
+    throw asWritePermissionError(filePath, error);
+  }
 }

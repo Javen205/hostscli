@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { chmod, open, rename, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
+import { HostsCliError, PermissionError } from '../errors';
 
 export interface AtomicWriteOptions {
   /** rename 失败时的最大尝试次数（Windows 上被杀软/索引占用时有用）。 */
@@ -16,6 +17,20 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
+ * 把底层 errno 权限类错误统一成 PermissionError，避免 CLI 把裸
+ * `EACCES: permission denied, mkdir ...` 当作未知错误输出（退出码会落到 1）。
+ * 已有 HostsCliError 原样返回，避免重复包装。
+ */
+export function asWritePermissionError(targetPath: string, error: unknown): unknown {
+  if (error instanceof HostsCliError) return error;
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+    return new PermissionError(targetPath, `没有写入权限：${targetPath}（${code}）`);
+  }
+  return error;
+}
+
+/**
  * 同目录临时文件 → fsync → rename。
  * 目标文件要么保持旧内容，要么变成新内容，不会出现半截文件。
  */
@@ -23,6 +38,18 @@ export async function atomicWriteFile(
   targetPath: string,
   content: Buffer,
   options: AtomicWriteOptions = {},
+): Promise<void> {
+  try {
+    await writeTemporaryAndRename(targetPath, content, options);
+  } catch (error) {
+    throw asWritePermissionError(targetPath, error);
+  }
+}
+
+async function writeTemporaryAndRename(
+  targetPath: string,
+  content: Buffer,
+  options: AtomicWriteOptions,
 ): Promise<void> {
   const directory = dirname(targetPath);
   const temporaryPath = join(

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readdir, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
-import { atomicWriteFile } from './system/atomic-write';
+import { asWritePermissionError, atomicWriteFile } from './system/atomic-write';
 
 export const DEFAULT_BACKUP_KEEP = 20;
 
@@ -52,7 +52,11 @@ export async function backupFile(
   options: BackupOptions = {},
 ): Promise<string> {
   const directory = options.backupDir ?? defaultBackupDir();
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw asWritePermissionError(directory, error);
+  }
 
   const digest = createHash('sha256').update(content).digest('hex').slice(0, 8);
   const timestamp = formatTimestamp(options.timestamp ?? new Date());

@@ -7,6 +7,7 @@ import type { HostEntry } from '../hosts/models';
 import { parseHosts } from '../hosts/parser';
 import { containsForbiddenText, validateEntryInput } from '../hosts/validation';
 import { readJsonOrDefault, writeJsonFile } from '../storage/json';
+import { asWritePermissionError } from '../system/atomic-write';
 
 /** 方案 ID 同时是文件名，必须限制字符集以防止目录穿越。 */
 export const profileIdSchema = z
@@ -186,7 +187,11 @@ export async function writeProfile(
     throw new InvalidInputError(`方案已存在：${profile.id}`);
   }
 
-  await mkdir(profilesDir, { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(profilesDir, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw asWritePermissionError(profilesDir, error);
+  }
   // profile 的条目数组可能上万条，紧凑 JSON 在写入热路径上明显更省 CPU。
   await writeJsonFile(filePath, normalized, { pretty: false });
   return normalized;
@@ -214,7 +219,7 @@ export async function deleteProfile(profilesDir: string, id: string): Promise<vo
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new EntryNotFoundError(`方案不存在：${id}`);
     }
-    throw error;
+    throw asWritePermissionError(filePath, error);
   }
 }
 
