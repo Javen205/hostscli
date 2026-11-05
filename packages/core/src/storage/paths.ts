@@ -3,6 +3,9 @@ import { homedir, tmpdir } from 'node:os';
 import { join, posix, win32 } from 'node:path';
 import { InvalidInputError } from '../errors';
 
+export { adoptDataDirOwnership, sudoDataOwner } from './ownership';
+export type { AdoptOwnershipDeps, DataOwner, SudoOwnerInput } from './ownership';
+
 export interface DataPaths {
   dataDir: string;
   configPath: string;

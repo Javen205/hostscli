@@ -217,7 +217,13 @@ export {
 } from './storage/state';
 export type { HostsCliState, TtlRecord, LastRender } from './storage/state';
 export type { DataPaths, DataPathOptions } from './storage/paths';
-export { resolveDataDir, resolveDataPaths } from './storage/paths';
+export {
+  resolveDataDir,
+  resolveDataPaths,
+  adoptDataDirOwnership,
+  sudoDataOwner,
+} from './storage/paths';
+export type { DataOwner, AdoptOwnershipDeps, SudoOwnerInput } from './storage/paths';
 
 // 方案 / 规则栈
 export {

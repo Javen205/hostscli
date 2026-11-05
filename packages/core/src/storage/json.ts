@@ -1,8 +1,32 @@
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { ZodType } from 'zod';
 import { StorageCorruptError, PermissionError } from '../errors';
 import { asWritePermissionError, atomicWriteFile } from '../system/atomic-write';
+
+/**
+ * 读取失败时尽量把"谁拥有、我以谁的身份读"写进错误信息。
+ *
+ * macOS 的 sudo 会保留 HOME，`sudo hostscli ...` 因此会把数据文件写成 root
+ * 属主；之后普通用户读这些文件只会得到裸 EACCES（"没有读取权限"），看不出
+ * 原因是属主不一致，也不知道该执行什么命令修复。
+ */
+async function describeReadDenied(filePath: string): Promise<string> {
+  const euid = typeof process.getuid === 'function' ? process.getuid() : 0;
+  const gid = typeof process.getgid === 'function' ? process.getgid() : 0;
+  let details = `当前 euid=${euid}`;
+  try {
+    const info = await stat(filePath);
+    details = `属主 uid=${info.uid} gid=${info.gid}，当前 euid=${euid}`;
+  } catch {
+    // 文件可能已被删除，只报当前身份。
+  }
+  return (
+    `没有读取权限：${filePath}（${details}）。` +
+    `若属主与 euid 不一致（常见于 sudo 运行留下的 root 属主），执行：` +
+    `sudo chown -R ${euid}:${gid} ${dirname(filePath)}；否则请检查文件权限位。`
+  );
+}
 
 /**
  * 读取并校验 JSON 文件。文件不存在时返回 `fallback`；存在但损坏时拒绝继续，
@@ -20,7 +44,7 @@ export async function readJsonOrDefault<T>(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'EACCES' || code === 'EPERM') {
-      throw new PermissionError(filePath, `没有读取权限：${filePath}`);
+      throw new PermissionError(filePath, await describeReadDenied(filePath));
     }
     if (code === 'ENOENT') return fallback();
     throw new StorageCorruptError(filePath, `无法读取配置文件（${code ?? '未知错误'}）`);

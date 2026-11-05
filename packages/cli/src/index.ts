@@ -38,8 +38,29 @@ function findRequestedCommand(args: string[]): CommandEntry | undefined {
   return findCommandEntry(firstPositional);
 }
 
+/**
+ * sudo 下写系统 hosts 时，macOS 会把 HOME 保留为调用者家目录，数据文件因此
+ * 落成 root 属主，普通用户之后完全读不了。命令结束时把数据目录内 root 属主
+ * 的条目归还给 `SUDO_UID`（只有能确认数据目录属于调用者家目录时才做）。
+ * 这是尽力而为的收尾：失败不影响命令退出码。
+ */
+async function adoptDataOwnership(dataDir: string | undefined): Promise<void> {
+  try {
+    const [{ resolveDataDir, sudoDataOwner, adoptDataDirOwnership }] = await Promise.all([
+      import('@hostscli/core/storage'),
+    ]);
+    const resolved = resolveDataDir(dataDir);
+    const owner = sudoDataOwner({ dataDir: resolved });
+    if (owner === null) return;
+    await adoptDataDirOwnership(resolved, owner);
+  } catch {
+    // 属主归还失败不改变命令结果，用户仍可用 sudo chown 手动修复。
+  }
+}
+
 async function main(): Promise<void> {
   const program = new Command();
+  const ownership = { dataDir: undefined as string | undefined, executed: false };
 
   program
     .name('hostscli')
@@ -62,6 +83,10 @@ async function main(): Promise<void> {
     }
     process.env.HOSTSCLI_COMMAND = names.join(' ') || actionCommand.name();
     process.env.HOSTSCLI_COMMAND_ARGS = JSON.stringify(process.argv.slice(2));
+
+    ownership.executed = true;
+    const options = actionCommand.opts() as { dataDir?: string };
+    ownership.dataDir = options.dataDir;
   });
 
   program.action(() => {
@@ -75,7 +100,11 @@ async function main(): Promise<void> {
     registerCommandPlaceholders(program);
   }
 
-  await program.parseAsync(process.argv);
+  try {
+    await program.parseAsync(process.argv);
+  } finally {
+    if (ownership.executed) await adoptDataOwnership(ownership.dataDir);
+  }
 }
 
 main().catch(handleError);

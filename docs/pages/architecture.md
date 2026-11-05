@@ -146,3 +146,5 @@ logs/run.jsonl       普通运行日志（JSONL，0600，按 logging.keep 轮转
 跨进程锁文件直接放在系统临时目录本身（POSIX 取 `/tmp` 的真实路径，如 macOS 的 `/private/tmp`），避免系统 hosts 不可写时无法加锁。目录必须由 root 拥有且权限为 `01777`（粘滞位 + 全员可创建）：普通用户与 `sudo` 都能创建自己的锁文件，但粘滞位保证只有锁文件属主或 root 能删除，因此不能抢占别人的锁。锁文件用 `O_CREAT|O_EXCL`（`0644`）原子创建，属主不再是使用判据；`kill(pid, 0)` 返回 `EPERM`（进程存在但属于别的用户）按存活处理，避免误删他人正在使用的锁。之所以不再使用 `/tmp/hostscli-locks` 子目录：子目录属主会成为单点阻塞——普通用户先运行过一次后，root（`sudo` 写系统 hosts 的主场景）会因属主校验而无法使用。工作区锁按排序同时获取 `lockPathFor(hostsPath)` 与 `lockPathForDataDir(dataDir)`，覆盖"读 - 改 - 写 - 校验 - 持久化"全过程；配置文件在锁外加载，避免锁内再取锁。
 
 锁按 hosts 路径串行化写入，但**不支持多个 dataDir 共用同一份 hosts**：串行不等于合并，后写者会按自己的 profiles/state 整段重建 hosts，先写者条目消失。需要多套规则时请在同一个 dataDir 内用 profile/layer。
+
+`sudo hostscli` 写系统 hosts 时，macOS 默认保留调用者的 `HOME`，数据文件因此会落成 `root:root 0600`，普通用户随后读取会得到 `PERMISSION`。CLI 在命令结束时检测：仅当 `euid === 0`、`SUDO_UID/SUDO_GID` 有效、数据目录位于 `HOME` 内且 `HOME` 属主等于 `SUDO_UID` 时（即确认是"sudo 借用了别人的家目录"），才把数据目录内 root 属主的条目递归归还给 `SUDO_UID`。Linux sudo 会把 `HOME` 改为 `/root`（属主 0，不满足条件），因此不会误改 root 自己的数据目录。属主归还失败只影响数据可读性，不改变命令退出码；读取失败时错误信息会给出属主与 `euid` 以及可执行的 `sudo chown -R <uid>:<gid> <dataDir>` 修复命令。
