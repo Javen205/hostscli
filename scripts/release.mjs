@@ -263,16 +263,19 @@ function waitForRun(gh, runId, timeoutMs) {
   fail(EXIT.GIT_OR_CI, `等待 CI run ${runId} 超时`);
 }
 
-function assertPack(files) {
+function assertPack(files, packedSize) {
   const paths = files.map((file) => file.path);
-  const packedSize = files.reduce((sum, file) => sum + file.size, 0);
+  const unpackedSize = files.reduce((sum, file) => sum + file.size, 0);
   const problems = [];
 
   if (paths.length < 80 || paths.length > 250) {
     problems.push(`文件数 ${paths.length} 不在 80-250 之间`);
   }
   if (packedSize > 3 * 1024 * 1024) {
-    problems.push(`解包体积 ${(packedSize / 1024 / 1024).toFixed(1)} MB 超过 3MB`);
+    problems.push(`压缩体积 ${(packedSize / 1024 / 1024).toFixed(1)} MB 超过 3MB`);
+  }
+  if (unpackedSize > 8 * 1024 * 1024) {
+    problems.push(`解包体积 ${(unpackedSize / 1024 / 1024).toFixed(1)} MB 超过 8MB`);
   }
   for (const required of ['dist/index.js', 'README.md', 'LICENSE', 'package.json']) {
     if (!paths.includes(required)) problems.push(`缺少必需文件 ${required}`);
@@ -298,11 +301,16 @@ function writeVersion(text, version) {
 }
 
 function findVersionReferences(oldVersion) {
-  const result = run('git', ['grep', '-n', '-F', oldVersion], { cwd: repoRoot });
+  // 用边界匹配，避免把 10.1.0.1 这类 IP / 依赖版本号当成产品版本。
+  const escaped = oldVersion.replace(/\./g, '\\.');
+  const result = run('git', ['grep', '-n', '-E', `(^|[^0-9.])${escaped}([^0-9.]|$)`], {
+    cwd: repoRoot,
+  });
   if (result.status === 0) {
     return result.stdout
       .split('\n')
       .filter((line) => !line.startsWith('pnpm-lock.yaml:'))
+      .filter((line) => !line.startsWith('packages/cli/package.json:'))
       .filter(Boolean);
   }
   if (result.status === 1) return [];
@@ -418,7 +426,7 @@ async function main() {
   } catch {
     fail(EXIT.PREFLIGHT, 'npm pack --dry-run 未返回可解析的 JSON', tail(packed.stdout));
   }
-  const problems = assertPack(manifest.files);
+  const problems = assertPack(manifest.files, manifest.size);
   if (problems.length > 0) {
     fail(EXIT.PREFLIGHT, `打包体检不通过：${problems.join('；')}`);
   }
