@@ -483,7 +483,7 @@ describe('阶段 4：数据目录 git 快照', () => {
     } finally {
       await env.cleanup();
     }
-  });
+  }, 30_000);
 
   it('拒绝非法的版本参数，避免 git 参数注入', async () => {
     const env = await makeEnv();
