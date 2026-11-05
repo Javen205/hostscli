@@ -22,7 +22,8 @@
     "bench:stage4": "node scripts/bench.mjs stage4",
     "changeset": "changeset",
     "version-packages": "changeset version && pnpm install --lockfile-only",
-    "release": "pnpm -r publish --access public"
+    "release": "node scripts/release.mjs",
+    "release:dry": "node scripts/release.mjs --dry-run"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",
