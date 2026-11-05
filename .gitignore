@@ -9,3 +9,4 @@ coverage/
 .DS_Store
 .screenshots/
 docs/dev/
+.trae-html-share-packages/
