@@ -1,15 +1,27 @@
 {
   "name": "hostscli",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "跨平台 hosts 管理 CLI：无损解析、可控的托管区块、细粒度规则管理",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "hostscli": "./dist/index.js"
   },
   "main": "./dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Javen205/hostscli.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/Javen205/hostscli#readme",
+  "bugs": {
+    "url": "https://github.com/Javen205/hostscli/issues"
+  },
   "engines": {
     "node": ">=20"
   },
