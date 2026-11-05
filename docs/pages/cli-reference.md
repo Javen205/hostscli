@@ -12,9 +12,9 @@
 node packages/cli/dist/index.js --version
 
 # 2) workspace 内链接（pnpm link --global 后）
-pnpm --filter hostscli exec hostscli --version
+pnpm --filter @javen205/hostscli exec hostscli --version
 
-# 3) 通过 npm 全局安装后
+# 3) 通过 npm 全局安装后（npm i -g @javen205/hostscli）
 hostscli --version
 ```
 

@@ -11,11 +11,11 @@
 | 参数与数据校验 | zod |
 | 测试 | vitest |
 | Lint / 格式 | eslint + typescript-eslint + prettier |
-| 版本与发布 | Changesets；对外只发布 `hostscli` 一个包 |
+| 版本与发布 | Changesets；对外只发布 `@javen205/hostscli` 一个包 |
 
 ## 2. 为什么是 Node.js + TypeScript
 
-目标用户是本来就安装 Node 的开发者，分发路径为 `npm i -g hostscli` / `npx hostscli`。在这个前提下，选择 TypeScript 的理由是：
+目标用户是本来就安装 Node 的开发者，分发路径为 `npm i -g @javen205/hostscli` / `npx @javen205/hostscli`。在这个前提下，选择 TypeScript 的理由是：
 
 1. **单语言维护**：领域逻辑、CLI 输出与测试都用同一语言，避免为系统工具单独维护一套分发链路。
 2. **迭代成本低**：核心复杂度在 hosts 文件的模型、规则合并、TTL 状态机与诊断语义，不在系统调用；这些用 TS 表达与测试更快。

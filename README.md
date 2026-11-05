@@ -14,10 +14,10 @@
 
 ```bash
 # npm
-npm i -g hostscli
+npm i -g @javen205/hostscli
 
 # 或 pnpm
-pnpm add -g hostscli
+pnpm add -g @javen205/hostscli
 
 # 确认安装
 hostscli --help
