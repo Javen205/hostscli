@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import pc from 'picocolors';
+import { binName } from '../program-name';
 import {
   addDataDirOption,
   addWorkspaceOptions,
@@ -33,7 +34,7 @@ export function registerGitCommand(program: Command): void {
         return;
       }
       if (!result.initialized) {
-        process.stdout.write(pc.dim('尚未初始化快照仓库；运行 hostscli git init。\n'));
+        process.stdout.write(pc.dim(`尚未初始化快照仓库；运行 ${binName()} git init。\n`));
         return;
       }
       process.stdout.write(`仓库：${result.gitDir}\n`);

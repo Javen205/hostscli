@@ -20,28 +20,39 @@ export interface FileOption {
   file?: string;
 }
 
-export function addWorkspaceOptions(
-  command: Command,
-  extras: {
-    json?: boolean;
-    dryRun?: boolean;
-    layer?: boolean;
-    onConflict?: boolean;
-    verify?: boolean;
-  } = {},
-): Command {
-  command
-    .option('--file <path>', '指定 hosts 文件路径（默认按平台解析）')
-    .option('--data-dir <path>', '指定数据目录（默认 ~/.hostscli，可用 HOSSCLI_HOME 覆盖）')
-    .option('--skip-dns-flush', '写回后不刷新 DNS 缓存');
+export interface WorkspaceOptionFlags {
+  json?: boolean;
+  dryRun?: boolean;
+  layer?: boolean;
+  onConflict?: boolean;
+  verify?: boolean;
+  /**
+   * 只读写数据目录的命令（profile list、config * 等）不需要 --file：
+   * 多声明一个用不上的路径参数会让人误以为它会读写 hosts。
+   */
+  file?: boolean;
+  /** 只读命令不需要 --skip-dns-flush：它从未写回 hosts。 */
+  dnsFlush?: boolean;
+}
+
+export function addWorkspaceOptions(command: Command, extras: WorkspaceOptionFlags = {}): Command {
+  if (extras.file !== false) {
+    command.option('--file <path>', '指定 hosts 文件路径（默认按平台解析）');
+  }
+  command.option('--data-dir <path>', '指定数据目录（默认 ~/.hostscli，可用 HOSSCLI_HOME 覆盖）');
+  if (extras.dnsFlush !== false) {
+    command.option('--skip-dns-flush', '写回后不刷新 DNS 缓存');
+  }
   if (extras.json) command.option('--json', '以 JSON 输出（便于脚本消费）');
   if (extras.dryRun) command.option('--dry-run', '只输出 unified diff，不写文件');
   if (extras.layer) command.option('--layer <id>', '指定规则层（多层栈时必须）');
   if (extras.verify) {
-    command.option(
-      '--verify',
-      '写入后抽查托管域名解析，失败自动回滚并记录 audit（也可用 defaults.verifyAfterApply 默认开启）',
-    );
+    command
+      .option(
+        '--verify',
+        '写入后抽查托管域名解析，失败自动回滚并记录 audit（也可用 defaults.verifyAfterApply 默认开启）',
+      )
+      .option('--no-verify', '本次不校验解析，覆盖 defaults.verifyAfterApply');
   }
   if (extras.onConflict) {
     command.option(
@@ -69,7 +80,8 @@ export function workspaceOptions(options: CommonOptions): WorkspaceOptions {
     ...(options.dataDir !== undefined ? { dataDir: options.dataDir } : {}),
     ...(options.dryRun ? { dryRun: true } : {}),
     ...(options.skipDnsFlush ? { dnsFlush: false } : {}),
-    ...(options.verify ? { verify: true } : {}),
+    // verify 要区分「未指定」与「显式关闭」：后者用于覆盖 defaults.verifyAfterApply。
+    ...(options.verify !== undefined ? { verify: options.verify } : {}),
     onWarning: (message) => process.stderr.write(pc.yellow(`警告：${message}\n`)),
   };
 }

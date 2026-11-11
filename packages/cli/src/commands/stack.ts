@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import pc from 'picocolors';
+import { binName } from '../program-name';
 import {
   addDataDirOption,
   addWorkspaceOptions,
@@ -54,7 +55,9 @@ export function registerStackCommand(program: Command): void {
         }。\n`,
       );
       if (result.enabled) {
-        process.stdout.write(pc.dim('运行 hostscli stack apply --apply 将最终结果写入 hosts。\n'));
+        process.stdout.write(
+          pc.dim(`运行 ${binName()} stack apply --apply 将最终结果写入 hosts。\n`),
+        );
       }
     });
 
@@ -153,7 +156,7 @@ export function registerStackCommand(program: Command): void {
 
   addWorkspaceOptions(
     stack.command('explain <hostname>').description('解释单个域名的候选链与最终结果'),
-    { json: true, onConflict: true },
+    { json: true, onConflict: true, dnsFlush: false },
   ).action(async (hostname: string, options) => {
     const { explainStackHostname } = await import('@hostscli/core/stack');
     const result = await explainStackHostname({

@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import pc from 'picocolors';
+import { binName } from '../program-name';
 import {
   addDataDirOption,
   parseIntOption,
@@ -41,7 +42,7 @@ export function registerRemoteCommand(program: Command): void {
       process.stdout.write(
         `已登记订阅 ${result.source.id} → ${result.source.url}（方案 ${result.source.profileId ?? result.source.id}）。\n`,
       );
-      process.stdout.write(pc.dim(`运行 hostscli remote update ${id} 拉取内容。\n`));
+      process.stdout.write(pc.dim(`运行 ${binName()} remote update ${id} 拉取内容。\n`));
       printWarnings(result.warnings);
     });
 
@@ -55,7 +56,7 @@ export function registerRemoteCommand(program: Command): void {
       return;
     }
     if (result.sources.length === 0) {
-      process.stdout.write('（没有订阅，可用 hostscli remote add <id> --url <url> 添加）\n');
+      process.stdout.write(`（没有订阅，可用 ${binName()} remote add <id> --url <url> 添加）\n`);
       return;
     }
     const { default: Table } = await import('cli-table3');

@@ -6,7 +6,27 @@ import type { ChildProcess } from 'node:child_process';
 import type { Command } from 'commander';
 import pc from 'picocolors';
 import { constants as osConstants } from 'node:os';
-import { addWorkspaceOptions, printJson, printWarnings, workspaceOptions } from './common';
+import { binName } from '../program-name';
+import type { CommonOptions } from './common';
+import {
+  addDataDirOption,
+  addWorkspaceOptions,
+  printJson,
+  printWarnings,
+  workspaceOptions,
+} from './common';
+
+/**
+ * 父命令与子命令都声明了同名 workspace 选项时，子命令未显式传入的项是 undefined。
+ * 直接展开会把父命令的取值覆盖成 undefined，因此只合并有值的项。
+ */
+function inheritedOptions(parent: Command | undefined, options: CommonOptions): CommonOptions {
+  const merged: CommonOptions = { ...(parent?.opts() ?? {}) };
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
+  }
+  return merged;
+}
 
 interface RunCliOptions {
   host?: string;
@@ -118,7 +138,7 @@ async function runCommand(options: RunCliOptions, command: string[]): Promise<vo
     } catch (error) {
       process.stderr.write(
         pc.yellow(
-          `警告：临时条目清理失败，稍后可执行 hostscli run gc 回收：${(error as Error).message}\n`,
+          `警告：临时条目清理失败，稍后可执行 ${binName()} run gc 回收：${(error as Error).message}\n`,
         ),
       );
     }
@@ -141,38 +161,37 @@ export function registerRunCommand(program: Command): void {
     await runCommand(options, command);
   });
 
-  run
-    .command('list')
-    .description('列出 run 会话租约（orphan 表示父进程已退出）')
-    .option('--json', '以 JSON 输出（便于脚本消费）')
-    .action(async (options, command) => {
-      const merged = { ...command.parent?.opts(), ...options };
-      const { listRuns } = await import('@hostscli/core/run');
-      const result = await listRuns(workspaceOptions(merged));
-      if (options.json) {
-        printJson(result);
-        return;
-      }
-      if (result.sessions.length === 0) {
-        process.stdout.write(pc.dim('没有 run 会话。\n'));
-        return;
-      }
-      for (const session of result.sessions) {
-        const state = session.orphan ? pc.yellow('orphan') : pc.green('alive');
-        process.stdout.write(
-          `${session.sessionId} ${state} pid=${session.pid} ${session.hostnames.join(', ')} → ${session.ip}\n`,
-        );
-      }
-    });
+  addDataDirOption(
+    run.command('list').description('列出 run 会话租约（orphan 表示父进程已退出）'),
+    { json: true },
+  ).action(async (options, command) => {
+    const merged = inheritedOptions(command.parent, options);
+    const { listRuns } = await import('@hostscli/core/run');
+    const result = await listRuns(workspaceOptions(merged));
+    if (options.json) {
+      printJson(result);
+      return;
+    }
+    if (result.sessions.length === 0) {
+      process.stdout.write(pc.dim('没有 run 会话。\n'));
+      return;
+    }
+    for (const session of result.sessions) {
+      const state = session.orphan ? pc.yellow('orphan') : pc.green('alive');
+      process.stdout.write(
+        `${session.sessionId} ${state} pid=${session.pid} ${session.hostnames.join(', ')} → ${session.ip}\n`,
+      );
+    }
+  });
 
-  run
-    .command('gc')
-    .description('回收父进程已退出的 run 会话（不触碰仍在运行的会话）')
-    .option('--json', '以 JSON 输出（便于脚本消费）')
+  addWorkspaceOptions(
+    run.command('gc').description('回收父进程已退出的 run 会话（不触碰仍在运行的会话）'),
+    { json: true },
+  )
     .option('--dry-run', '只列出将回收的会话，不写入')
     .option('--force', '忽略进程存活判断，回收所有会话（pid 复用兜底）')
     .action(async (options, command) => {
-      const merged = { ...command.parent?.opts(), ...options };
+      const merged = inheritedOptions(command.parent, options);
       const { gcRuns } = await import('@hostscli/core/run');
       const result = await gcRuns({
         ...workspaceOptions(merged),

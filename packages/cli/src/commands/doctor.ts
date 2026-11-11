@@ -7,7 +7,7 @@ export function registerDoctorCommand(program: Command): void {
     program
       .command('doctor [hostnames...]')
       .description('三路解析对比：托管规则 / 系统 DNS / 实际解析（只读）'),
-    { json: true },
+    { json: true, dnsFlush: false },
   )
     .option('--all', '诊断托管区块里的全部域名')
     .option('--concurrency <n>', '并发上限（默认 4）', parseIntOption('--concurrency', { min: 1 }))
