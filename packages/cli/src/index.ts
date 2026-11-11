@@ -10,6 +10,7 @@ import {
   type CommandEntry,
 } from './command-manifest';
 import { errorMessage, exitCodeFor } from './errors';
+import { binName } from './program-name';
 
 const packageJson = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'),
@@ -63,7 +64,8 @@ async function main(): Promise<void> {
   const ownership = { dataDir: undefined as string | undefined, executed: false };
 
   program
-    .name('hostscli')
+    // 按 argv[1] 的 basename 自适应：`hosts-cli` 调用时 Usage 显示 hosts-cli。
+    .name(binName())
     .description('跨平台 hosts 管理 CLI：方案切换、单条 TTL、规则栈与 DNS 诊断')
     .version(packageJson.version)
     .showHelpAfterError()

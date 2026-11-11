@@ -8,7 +8,8 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "hostscli": "./dist/index.js"
+    "hostscli": "./dist/index.js",
+    "hosts-cli": "./dist/index.js"
   },
   "main": "./dist/index.js",
   "files": [
