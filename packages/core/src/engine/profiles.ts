@@ -1,5 +1,6 @@
-import { readFile } from 'node:fs/promises';
-import { InvalidInputError } from '../errors';
+import { readFile, unlink } from 'node:fs/promises';
+import { DuplicateEntryError, EntryNotFoundError, InvalidInputError } from '../errors';
+import { normalizeHostname } from '../hosts/models';
 import type { Profile, ProfileEntry } from '../profiles/store';
 import {
   createProfile,
@@ -7,19 +8,24 @@ import {
   listProfileIds,
   profilePath,
   readProfile,
+  validateProfile,
   writeProfile,
 } from '../profiles/store';
+import { saveState } from '../storage/state';
+import { atomicWriteFile } from '../system/atomic-write';
 import { buildRenderPlan } from './plan';
 import { commitPlan } from './commit';
 import { loadHostsDocument, withWorkspace } from './context';
 import type { Workspace, WorkspaceOptions } from './context';
 import { entryIdFor, resolveActiveLayers } from './layers';
 import { prepare } from './crud';
-import { currentOperator, recordAuditFailure } from './audit';
+import { appendAudit, currentOperator, recordAuditFailure } from './audit';
 import { auditAuxWrite, logRuntime } from './aux-write';
 import { hashBytes, readStateRaw, recordOperation, restoreFile } from './history';
 import type {
   ProfileCreateOptions,
+  ProfileMoveOptions,
+  ProfileMoveResult,
   ProfileSaveOptions,
   ProfileUseOptions,
   ProfileView,
@@ -327,5 +333,290 @@ export async function updateProfileMeta(
         parts.length > 0 ? `更新方案 ${id}：${parts.join('；')}。` : `方案 ${id} 元信息无变化。`,
     });
     return updated;
+  });
+}
+
+/**
+ * 只写方案文件与 state、不重建 hosts 的提交路径。
+ * 用于"源与目标方案都未生效"的迁移：此时 hosts 不应因迁移而变化，
+ * 但仍要留下 undo 快照与审计记录。
+ */
+async function persistMovedProfiles(
+  workspace: Workspace,
+  profiles: Profile[],
+  meta: { args: string[]; detail: string },
+): Promise<string[]> {
+  const warnings: string[] = [];
+  const snapshots = new Map<string, Buffer | null>();
+  for (const profile of profiles) {
+    const path = profilePath(workspace.paths.profilesDir, profile.id);
+    snapshots.set(path, await readFileOrNull(path));
+  }
+  const beforeHosts = await readFileOrNull(workspace.hostsPath);
+  const beforeStateRaw = await readStateRaw(workspace.paths.statePath);
+
+  try {
+    for (const profile of profiles) {
+      await writeProfile(workspace.paths.profilesDir, profile, { trusted: true });
+    }
+    await saveState(workspace.paths.statePath, workspace.state);
+  } catch (error) {
+    // 两个方案文件必须同进同退，否则会留下"源方案已删、目标方案没加"的半套状态。
+    for (const [path, previous] of snapshots) {
+      if (previous === null) await unlink(path).catch(() => undefined);
+      else await atomicWriteFile(path, previous).catch(() => undefined);
+    }
+    throw error;
+  }
+
+  const beforeProfiles = new Map<string, Buffer | null>();
+  const afterProfiles = new Map<string, Buffer | null>();
+  for (const profile of profiles) {
+    const path = profilePath(workspace.paths.profilesDir, profile.id);
+    beforeProfiles.set(profile.id, snapshots.get(path) ?? null);
+    afterProfiles.set(profile.id, await readFileOrNull(path));
+  }
+
+  try {
+    await recordOperation({
+      dataDir: workspace.dataDir,
+      hostsPath: workspace.hostsPath,
+      command: 'profile move',
+      args: meta.args,
+      planHash: null,
+      keep: workspace.config.defaults.historyKeep,
+      beforeHosts,
+      afterHosts: beforeHosts,
+      beforeStateRaw,
+      afterStateRaw: await readStateRaw(workspace.paths.statePath),
+      beforeProfiles,
+      afterProfiles,
+      // hosts 没有变化，摘要只需要方案侧与 TTL 的变化。
+      hostsBefore: [],
+      hostsAfter: [],
+      stateBefore: workspace.initialState,
+      stateAfter: workspace.state,
+      operator: currentOperator(),
+      now: workspace.now,
+    });
+  } catch (error) {
+    warnings.push(`迁移已完成，但 undo 历史记录失败：${String(error)}`);
+    await recordAuditFailure(workspace.dataDir, {
+      at: workspace.now.toISOString(),
+      command: 'profile move',
+      detail: `history: ${String(error)}`,
+    });
+    await logRuntime(workspace, {
+      level: 'warn',
+      command: 'profile move',
+      event: 'history-failure',
+      detail: String(error),
+    });
+  }
+
+  await auditAuxWrite(
+    workspace,
+    {
+      command: 'profile move',
+      args: meta.args,
+      beforeSha256: hashBytes(beforeHosts),
+      afterSha256: hashBytes(beforeHosts),
+      detail: meta.detail,
+    },
+    warnings,
+  );
+  return warnings;
+}
+
+async function moveProfileEntryInWorkspace(
+  workspace: Workspace,
+  options: ProfileMoveOptions,
+): Promise<ProfileMoveResult> {
+  if (options.from === options.to) {
+    throw new InvalidInputError(`源方案与目标方案相同（${options.from}），无需迁移。`);
+  }
+
+  const key = normalizeHostname(options.hostname);
+  const source = await readProfile(workspace.paths.profilesDir, options.from);
+  const target = await readProfile(workspace.paths.profilesDir, options.to);
+
+  const matches = source.entries.filter((entry) =>
+    entry.hostnames.some((name) => normalizeHostname(name) === key),
+  );
+  if (matches.length === 0) {
+    throw new EntryNotFoundError(`方案 ${options.from} 中找不到主机名：${options.hostname}`);
+  }
+  if (matches.length > 1) {
+    throw new InvalidInputError(
+      `方案 ${options.from} 中有 ${matches.length} 个条目包含 ${options.hostname}，` +
+        '无法确定迁移哪一条；请先合并这些条目再迁移。',
+    );
+  }
+  const moved = matches[0] as ProfileEntry;
+  const movedKeys = new Set(moved.hostnames.map(normalizeHostname));
+
+  const conflicting = target.entries.filter((entry) =>
+    entry.hostnames.some((name) => movedKeys.has(normalizeHostname(name))),
+  );
+  if (conflicting.length > 0 && !options.force) {
+    const names = new Set<string>();
+    for (const entry of conflicting) {
+      for (const name of entry.hostnames) {
+        if (movedKeys.has(normalizeHostname(name))) names.add(name);
+      }
+    }
+    const ips = [...new Set(conflicting.map((entry) => entry.ip))].join(' / ');
+    throw new DuplicateEntryError(
+      `方案 ${options.to} 已存在主机名 ${[...names].join(', ')}（当前映射到 ${ips}）。` +
+        `如需覆盖，请加 --force：会把上述主机名从目标方案中移除并指向 ${moved.ip}` +
+        '（目标条目里的其他主机名保留）。',
+    );
+  }
+
+  const oldEntryId = entryIdFor(source.id, moved);
+  const newEntryId = entryIdFor(target.id, moved);
+  const replacedHostnames: string[] = [];
+  let ttlRecords = 0;
+
+  // 被覆盖的目标条目 ID 会失效，对应 TTL 记录必须清理，否则会变成指向不存在条目的孤儿。
+  const dangling = new Set(conflicting.map((entry) => entryIdFor(target.id, entry)));
+  if (dangling.size > 0) {
+    workspace.state.ttl = workspace.state.ttl.filter(
+      (record) => !(record.layerId === target.id && dangling.has(record.entryId)),
+    );
+  }
+
+  source.entries = source.entries.filter((entry) => entry !== moved);
+
+  if (conflicting.length > 0) {
+    const kept: ProfileEntry[] = [];
+    for (const entry of target.entries) {
+      const hits = entry.hostnames.filter((name) => movedKeys.has(normalizeHostname(name)));
+      if (hits.length === 0) {
+        kept.push(entry);
+        continue;
+      }
+      replacedHostnames.push(...hits);
+      const remaining = entry.hostnames.filter((name) => !movedKeys.has(normalizeHostname(name)));
+      // 整条主机名都被覆盖时目标条目不再有意义，直接丢弃。
+      if (remaining.length > 0) kept.push({ ...entry, hostnames: remaining });
+    }
+    target.entries = kept;
+  }
+  target.entries.push(moved);
+
+  // TTL 记录以 (layerId, entryId) 为键，entryId 含 layerId；
+  // 换方案必须同步改写，否则 TTL 到期时找不到条目，会被当成脏记录清掉。
+  for (const record of workspace.state.ttl) {
+    if (record.layerId !== source.id || record.entryId !== oldEntryId) continue;
+    record.layerId = target.id;
+    record.entryId = newEntryId;
+    ttlRecords += 1;
+  }
+
+  // 迁移后仍要过和读取时相同的语义校验（IP/主机名字面量、同层唯一性）：
+  // --force 的合并可能制造新的重复，不能因为数据来自已校验文件就跳过。
+  validateProfile(source, profilePath(workspace.paths.profilesDir, source.id));
+  validateProfile(target, profilePath(workspace.paths.profilesDir, target.id));
+
+  const args = [
+    options.hostname,
+    '--from',
+    options.from,
+    '--to',
+    options.to,
+    ...(options.force ? ['--force'] : []),
+  ];
+  const base = {
+    from: source.id,
+    to: target.id,
+    hostname: options.hostname,
+    movedIp: moved.ip,
+    movedHostnames: [...moved.hostnames],
+    ttlRecords,
+    replacedHostnames,
+    toActive: workspace.state.activeLayers.includes(target.id),
+  };
+  const detail =
+    `迁移 ${moved.ip} -> ${moved.hostnames.join(', ')}：方案 ${source.id} → ${target.id}` +
+    (ttlRecords > 0 ? `（TTL × ${ttlRecords}）` : '') +
+    (replacedHostnames.length > 0 ? `（覆盖：${replacedHostnames.join(', ')}）` : '') +
+    '。';
+
+  const activeIds = new Set(workspace.state.activeLayers);
+  if (!activeIds.has(source.id) && !activeIds.has(target.id)) {
+    if (workspace.dryRun) {
+      return {
+        ...base,
+        changed: false,
+        backupPath: null,
+        affected: [],
+        diff: '',
+        planHash: null,
+        warnings: [],
+      };
+    }
+    const warnings = await persistMovedProfiles(workspace, [source, target], { args, detail });
+    return {
+      ...base,
+      changed: false,
+      backupPath: null,
+      affected: [],
+      diff: '',
+      planHash: null,
+      warnings,
+    };
+  }
+
+  // 至少一侧生效：用生效层重新渲染托管区块，迁移后的条目才能立刻体现到 hosts。
+  const loaded = await loadHostsDocument(workspace, true);
+  const { profiles } = await resolveActiveLayers(workspace, loaded.document, { persist: true });
+  const activeProfiles = profiles.map((profile) =>
+    profile.id === source.id ? source : profile.id === target.id ? target : profile,
+  );
+  const plan = buildRenderPlan(workspace, loaded, activeProfiles, {
+    appendIfMissing: true,
+    ...(options.onConflict !== undefined ? { onConflict: options.onConflict } : {}),
+  });
+  const result = await commitPlan(workspace, plan, {
+    profiles: [source, target],
+    persistState: true,
+    command: 'profile move',
+    args,
+  });
+  return { ...result, ...base };
+}
+
+/**
+ * 把一个条目从 A 方案迁移到 B 方案（迁移而非"删了再建"）。
+ *
+ * 保留 ip / hostnames / comment / enabled / disabledReason，以及 state.json 中
+ * 属于该条目的 TTL 记录；冲突策略见 ProfileMoveOptions.force。
+ * 成功写入走 commitPlan（审计 + undo 历史），失败也会追加 move-failed 审计。
+ */
+export async function moveProfileEntry(options: ProfileMoveOptions): Promise<ProfileMoveResult> {
+  return withWorkspace(options, async (workspace) => {
+    try {
+      return await moveProfileEntryInWorkspace(workspace, options);
+    } catch (error) {
+      // 失败也要留痕：dry-run 不写任何东西，因此跳过。
+      if (!workspace.dryRun) {
+        await appendAudit(
+          workspace.paths.auditPath,
+          {
+            at: workspace.now.toISOString(),
+            action: 'move-failed',
+            ok: false,
+            hostsPath: workspace.hostsPath,
+            command: 'profile move',
+            commandArgs: [options.hostname, '--from', options.from, '--to', options.to],
+            operator: currentOperator(),
+            detail: error instanceof Error ? error.message : String(error),
+          },
+          { keep: workspace.config.defaults.auditKeep },
+        ).catch(() => undefined);
+      }
+      throw error;
+    }
   });
 }
