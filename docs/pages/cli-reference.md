@@ -5,7 +5,7 @@
 
 ## 1. 安装与调用
 
-安装或构建后，有三种等价调用方式：
+安装或构建后，有多种等价调用方式：
 
 ```bash
 # 1) 直接调用构建产物
@@ -16,7 +16,15 @@ pnpm --filter @javen205/hostscli exec hostscli --version
 
 # 3) 通过 npm 全局安装后（npm i -g @javen205/hostscli）
 hostscli --version
+hosts-cli --version   # 同一个包的第二个命令名，行为完全一致
 ```
+
+`hostscli` 与 `hosts-cli` 是两个等价命令名（包的 `bin` 里都指向同一入口）：
+
+- 两者共享同一份数据目录（`~/.hostscli` 或 `HOSSCLI_HOME` / `--data-dir`）、同一把锁、同一份 `state.json`、同一份 profiles；命令名**不参与**任何路径解析，交替使用不会"找不到之前的配置"。
+- 帮助、提示与 Usage 行按 `argv[1]` 自适应：用 `hosts-cli` 调用时提示 `hosts-cli ...`，用 `hostscli` 调用时提示 `hostscli ...`；包名始终是 `@javen205/hostscli`。
+
+> 风险提示：npm 上的 `hosts-cli` 是**其他人的包**。不要执行 `npx hosts-cli` 或 `npm i -g hosts-cli`——那会装到别人的包。`hosts-cli` 只在本包（`@javen205/hostscli`）已安装后的命令别名语境下有意义；如果本机此前装过同名命令，`npm i -g @javen205/hostscli` 会用本包的入口覆盖该名字，需要时可用 `which -a hosts-cli` 确认指向。
 
 下文示例统一用 `HCLI` 代指调用入口：
 
@@ -37,18 +45,31 @@ $HCLI --version
 
 ### 2.2 公共选项
 
-除 `--version` / `--help` / `completion` / `dns flush` 等少数命令外，大多数命令支持：
+公共选项按命令实际需要声明，不是所有命令都有全部选项：
+
+- **工作区定位**：需要读 hosts 的命令有 `--file <path>`；所有需要数据目录的命令都有 `--data-dir <path>`（`dns flush` 两者都不需要）。
+- **只读命令**（`profile list/show`、`config *`、`doctor`、`backup`、`audit *` 等）不声明 `--skip-dns-flush`：它们从不写回 hosts。
+- **只读写数据目录的命令**（`profile list/show/update/remove`、`config *`、`ttl list/due/pause/resume/extend`）不声明 `--file`：它们不读 hosts。
 
 | 选项 | 说明 |
 | --- | --- |
 | `--file <path>` | 指定 hosts 文件，默认按平台解析（`/etc/hosts` 或 Windows 系统路径）。**测试时务必显式传入临时文件** |
 | `--data-dir <path>` | 指定数据目录，默认 `~/.hostscli` 或 `HOSSCLI_HOME` |
-| `--skip-dns-flush` | 写回后不刷新 DNS 缓存 |
+| `--skip-dns-flush` | 写回后不刷新 DNS 缓存（仅写 hosts 的命令） |
 | `--json` | 机器可读输出（字段是对外契约，改名属于破坏性变更） |
 | `--dry-run` | 只生成 unified diff，不写 hosts、不写方案 / 状态（仅写操作命令） |
-| `--layer <id>` | 指定规则层；多启用层时必须 |
+| `--layer <id>` | 指定规则层；多启用层时必须（`add` 也接受等价的 `--profile <id>`） |
 | `--on-conflict <strategy>` | 同优先级冲突：`fail`（默认）/ `highest-priority` / `first-wins` / `last-wins` |
-| `--verify` | 写入后抽查托管域名解析，失败自动回滚并写 audit |
+| `--verify` / `--no-verify` | 写入后抽查托管域名解析，失败自动回滚并写 audit；`--no-verify` 显式关闭本次校验（覆盖 `defaults.verifyAfterApply`） |
+
+每个命令的真实选项以 `<命令> --help` 为准；下表是分类速查：
+
+| 类别 | 命令示例 | 典型选项 |
+| --- | --- | --- |
+| 只读 hosts + 数据目录 | `list`、`doctor`、`stack explain` | `--file` `--data-dir` `--json` |
+| 只读数据目录 | `profile list/show`、`ttl list/due`、`config *`、`audit *`、`remote list`、`git status/log/diff` | `--data-dir` `--json` |
+| 写 hosts | `add`、`remove`、`enable`、`disable`、`init`、`apply`、`restore`、`undo`、`profile use`、`stack apply`、`ttl tick/restore/cancel`、`network auto --apply` | `--file` `--data-dir` `--skip-dns-flush` `--dry-run` `--verify` |
+| 只写数据目录 | `profile create/save/update/remove`、`profile move`、`ttl pause/resume/extend`、`config set`、`remote add/remove/update`、`network map/unmap` | `--data-dir`（读取当前 hosts 的再加 `--file`） |
 
 ### 2.3 输出格式
 
@@ -98,19 +119,29 @@ $HCLI --version
 ### 4.1 `list`
 
 ```bash
-$HCLI list [--file <path>] [--data-dir <path>] [--json] [--on-conflict <strategy>] [--skip-dns-flush]
+$HCLI list [--file <path>] [--data-dir <path>] [--json] [--on-conflict <strategy>]
+          [--profile <id>]... [--all-profiles]
 ```
 
-输出托管 / 非托管条目、状态（`enabled` / `disabled` / `ttl_disabled`）与汇总。正常路径只读；若存在已到期 TTL，会经 `prepare → reconcileTtls` 惰性结算并写回 hosts、备份与 state（并非严格只读）。
+输出托管 / 非托管条目、状态（`enabled` / `disabled` / `ttl_disabled`）与汇总。表格首列 `#` 是**展示序号**（仅用于人工定位，不写入 `--json`），`PROFILE` 列显示条目所属方案（非托管行显示 `-`，超长方案名按 24 个可见字符截断）。`--json` 的 `entries[].layerId` 字段保持原样，可直接消费。正常路径只读；若存在已到期 TTL，会经 `prepare → reconcileTtls` 惰性结算并写回 hosts、备份与 state（并非严格只读）。
+
+方案视图（用于查看**未生效**方案里的条目）：
+
+- `--profile <id>`：查看指定方案，可重复或逗号分隔（`--profile a --profile b,c`）；方案可以未生效。
+- `--all-profiles`：一次查看全部方案（含未生效）。
+- 两者互斥，同时给出以 `INVALID_INPUT` 拒绝；`--profile` 未给出有效 ID 也以 `INVALID_INPUT` 拒绝。
+- 非托管行不属于任何方案，方案视图中一律**省略**（避免出现 `PROFILE` 为 `-` 却混在某个方案里的含糊行）：`--json` 的 `summary.external` 为 `0`，被省略的真实条数在 `view.omittedExternal`；表格末尾会提示"非托管条目 N 条不在方案视图中展示"。默认视图仍完整展示非托管区。
+- 方案视图的 `--json` 额外字段：`view: { mode: 'profiles' | 'all', profiles: string[], omittedExternal: number }`；默认视图没有 `view` 字段（向后兼容）。
+- 方案视图同样把 TTL 生效中的条目标为 `ttl_disabled`。
 
 ### 4.2 `add`
 
 ```bash
-$HCLI add <ip> <hostname...> [--layer <id>] [--comment <text>] [--verify]
+$HCLI add <ip> <hostname...> [--profile <id> | --layer <id>] [--comment <text>] [--verify]
          [--dry-run] [--json] [--file <path>] [--data-dir <path>] [--skip-dns-flush]
 ```
 
-多个 hostname 每个写一行；写入需要围栏，围栏不存在时会追加。`--dry-run` 只输出 diff。若存在 `run` 会话等多个活动层，普通写操作必须显式 `--layer <id>`，否则以 `CONFLICT` 拒绝（避免把规则写进不确定的层）。
+多个 hostname 每个写一行；写入需要围栏，围栏不存在时会追加。`--dry-run` 只输出 diff。`--profile` 与 `--layer` 是同一语义（目标方案 / 规则层），同时给出且指向不同方案会以 `INVALID_INPUT` 拒绝。目标方案必须已启用；未启用时以 `ENTRY_NOT_FOUND` 提示先执行 `profile use <id>`。若存在 `run` 会话等多个活动层，普通写操作必须显式指定方案，否则以 `CONFLICT` 拒绝（避免把规则写进不确定的层）。
 
 ### 4.3 `remove` / `enable` / `disable`
 
@@ -150,14 +181,27 @@ $HCLI restore [--from <file>] [--keep <n>] [--yes] [--json]
 ```bash
 $HCLI profile list [--json]
 $HCLI profile show <id> [--json]
-$HCLI profile create <id> [--name <name>] [--priority <n>] [--from-current] [--json]
-$HCLI profile use <id> [--dry-run] [--on-conflict <strategy>] [--json]
-$HCLI profile save <id> [--prune] [--json]   # 把当前托管区存回方案；默认保留被禁用 / 被 TTL 隐藏的条目
+$HCLI profile create <id> [--name <name>] [--priority <n>] [--from-current] [--json] [--file <path>]
+$HCLI profile use <id> [--dry-run] [--on-conflict <strategy>] [--verify] [--json]
+$HCLI profile save <id> [--prune] [--json] [--file <path>]   # 把当前托管区存回方案；默认保留被禁用 / 被 TTL 隐藏的条目
+$HCLI profile move <hostname> --from <id> --to <id> [--force] [--dry-run] [--on-conflict <strategy>] [--json]
 $HCLI profile update <id> [--name <name>] [--priority <n>] [--json]
 $HCLI profile remove <id> [--yes] [--json]
 ```
 
 生效中的方案不能删除；`use` 只保留目标方案为 active layer。`save` 仅允许把当前托管区存回**唯一生效**的方案，否则以 `INVALID_INPUT` 拒绝，避免覆盖其他层的规则。
+
+`profile show` 的表格与 `list` 共用同一套渲染：首列 `#` 为展示序号（1 起，仅渲染层，不写入 `--json`），列顺序、对齐与方案名截断规则与 `list` 一致。
+
+`profile list/show/update/remove` 只读写数据目录，因此只有 `--data-dir`；`create/save` 会读取当前 hosts（`--from-current` / 存回），所以额外有 `--file`，但都不写 hosts，故没有 `--skip-dns-flush`。
+
+**跨方案迁移**（`profile move`）是"把整条记录搬走"，不是删了再建：
+
+- 整条记录（含同条目的其他 hostname）迁移，保留 `ip`、`comment`、`enabled/disabledReason`，并同步迁移该条目的 TTL 记录（`entryId` 含方案 ID，不迁移会留下孤儿）。
+- 目标方案已有同名 hostname 时**默认报错**，错误信息会列出冲突主机名、当前 IP 与 `--force` 的后果。加 `--force` 时只把冲突 hostname 从目标条目中移除（同条目的其他 hostname 保留），再指向被迁移条目的 IP。
+- 源 / 目标都未生效时只写方案文件，hosts 字节不变；任一侧生效则重建托管区块并走正常备份、审计与 undo 历史。成功记 `write-ok`，失败记 `move-failed`（`ok:false`）。
+- 目标方案未生效时，条目会立刻从 hosts 消失（这是正确行为，不是丢数据），命令成功后追加提示：`方案 <id> 未生效，用 hostscli profile use <id> 切换后生效，或 hostscli list --profile <id> 查看。` `--json` 通过 `toActive: false` 表达同一信息。
+- 迁移后仍会走与读取时相同的 `validateProfile` 语义校验（IP / hostname 字面量、同层唯一性）。
 
 ### 4.7 `ttl`
 
@@ -167,10 +211,12 @@ $HCLI ttl due [--within <duration>] [--json]      # 默认 1d
 $HCLI ttl pause <hostname> [--layer <id>]
 $HCLI ttl resume <hostname> [--layer <id>]
 $HCLI ttl extend <hostname> --for <duration> [--layer <id>]
-$HCLI ttl restore|resolve <hostname> [--layer <id>] [--dry-run]
-$HCLI ttl cancel <hostname> [--layer <id>] [--dry-run]
-$HCLI ttl tick [--json]
+$HCLI ttl restore|resolve <hostname> [--layer <id>] [--dry-run] [--verify]
+$HCLI ttl cancel <hostname> [--layer <id>] [--dry-run] [--verify]
+$HCLI ttl tick [--verify] [--json]
 ```
+
+`list/due` 只读数据目录与 state；`pause/resume/extend` 也只改 state，因此这三类都没有 `--file` / `--skip-dns-flush`。`restore/cancel/tick` 会写回 hosts。
 
 时长格式：`30m`、`90s`、`2h`、`3d`、`1h30m`（支持 `s` / `m` / `h` / `d` 组合）；总时长最小 1 分钟，不支持小数。
 
@@ -185,7 +231,7 @@ $HCLI stack apply [--apply] [--dry-run] [--verify] [--on-conflict <strategy>]
 $HCLI stack explain <hostname> [--on-conflict <strategy>] [--json]
 ```
 
-`stack apply` 默认只预览 diff，`--apply` 才落盘。`explain` 输出候选链、被覆盖项与最终结果。
+`stack apply` 默认只预览 diff，`--apply` 才落盘。`explain` 输出候选链、被覆盖项与最终结果；`explain` 只读，因此没有 `--skip-dns-flush`。
 
 ### 4.9 `network`
 
@@ -273,10 +319,34 @@ $HCLI git rollback <rev> [--no-rebuild] [--file <path>] [--data-dir <path>]
 
 ```bash
 $HCLI export [--format json|yaml] [--out <file>]
-$HCLI completion bash|zsh|fish
+$HCLI completion bash|zsh|fish|powershell|cmd
 ```
 
 `export` 不包含 `audit.log`、`history/`、`cache/`、`backups/`。
+
+`completion` 的启用方式：
+
+```bash
+# bash
+$HCLI completion bash > ~/.local/share/bash-completion/completions/hostscli
+
+# zsh（写入 $fpath 目录后重开终端或执行 compinit）
+$HCLI completion zsh > "${fpath[1]}/_hostscli"
+
+# fish
+$HCLI completion fish > ~/.config/fish/completions/hostscli.fish
+
+# PowerShell（当前会话立刻生效；写进 $PROFILE 可持久化）
+$HCLI completion powershell | Out-String | Invoke-Expression
+
+# cmd（生成宏文件后手动加载）
+$HCLI completion cmd > hostscli-macros.cmd
+call hostscli-macros.cmd
+```
+
+覆盖范围：全部 23 个一级命令、`profile` / `ttl` / `stack` / `remote` / `dns` / `config` / `network` / `git` / `audit` / `run` 的二级子命令（含 `stack layer` 三级），以及 `--on-conflict` / `--format` / `--result` 的枚举值。PowerShell 在补全 `--profile` / `--layer` / `--from` / `--to` 时会按数据目录动态读取现有方案 ID（`HOSSCLI_HOME`，否则 `~/.hostscli`；命令行上的 `--data-dir` 不参与，避免为补全解析整条命令）。两个命令名 `hostscli` 与 `hosts-cli` 都注册了补全。
+
+**cmd 的限制（诚实说明）**：cmd.exe 没有可编程的补全接口，`doskey` 只能定义宏，无法补全命令名或参数。因此 `completion cmd` 输出的是 **doskey 宏 + 命令速查的 `.cmd` 文件，不是补全**；宏也只在当前 cmd 会话有效（写进 `HKCU\Software\Microsoft\Command Processor\AutoRun` 可自动加载）。需要真正的补全请用 PowerShell，或 WSL 下的 bash / zsh。
 
 ### 4.16 `audit`
 
@@ -289,6 +359,7 @@ $HCLI audit export [--format json|ndjson]
 ```
 
 - 所有成功写入都会记录 `write-ok`，字段包含时间、命令与参数、操作者（uid 与可得的用户名）、目标 hostsPath、变更前后内容哈希、条目级摘要（新增 / 删除 / 禁用 / 恢复）；验证与回滚事件同样入账。
+- `profile move` 失败（源方案找不到主机名、目标同名冲突等）会记录 `action: move-failed`、`ok: false`，`detail` 写明原因与 `--force` 语义；成功仍记 `write-ok`。
 - 审计是 **append-only 的结构化写入记录**，不提供防篡改能力：能够写 `dataDir` 的同一用户同样能改写 `audit.log`，无密钥哈希链挡不住。记录保留单调递增的 `id` 与时间戳，但不含 `seq` / `prevHash` / `recordHash` 链字段。
 - `audit verify` 只做一致性检查：文件可读、每行可解析为合法记录、时间戳与数字 ID 单调、轮转后自洽。格式损坏或记录不可解析时非零退出；它**不判断**内容是否被改写或尾部是否被截断。
 - 旧版本带链字段的记录仍可被 `audit list` / `show` / `export` 读取，链字段被忽略；如存在旧的 `audit.log.chain.json`，下一次写入会尽力删除且不影响任何命令。
@@ -320,13 +391,13 @@ $HCLI run list [--file <path>] [--data-dir <path>] [--json]
 $HCLI run gc [--file <path>] [--data-dir <path>] [--dry-run] [--force] [--json]
 ```
 
-- `--file` / `--data-dir` 声明在父命令 `run` 上，`run`、`run list`、`run gc` 三种形态都从父命令读取，不会被子命令覆盖成默认值。
+- `--file` / `--data-dir` 同时声明在父命令 `run` 与子命令 `run list` / `run gc` 上：两种位置都能解析，子命令只在显式给出时覆盖父命令的值。
 - 工作区选项必须写在 `--` 之前：`--` 之后的内容会原样交给子进程，写成 `run ... -- sleep 0 --file ...` 会让 `--file` 被 `sleep` 吃掉，从而落到默认系统 hosts。
 - 命令存活期间，临时条目以最高优先级生效；子进程正常退出、异常退出或被 SIGINT / SIGTERM / SIGHUP 中止后自动移除条目并清理会话方案。
 - 命令不存在或启动失败时不会写入临时条目。
 - 会话以 `session-<hex>` 命名并写入 `state.sessions` 租约，父进程被强杀时可执行 `run list` 查看、`run gc` 回收。
 - `run gc` 默认只回收 pid 已不存在的会话。存活判断仅依赖 pid，存在 pid 被复用导致漏回收的风险；确认目标进程已结束时可用 `--force` 强制回收所有会话。
-- 会话激活期间托管区存在多个活动层，普通写操作需要显式 `--layer <id>`，否则会以 `CONFLICT` 拒绝。
+- 会话激活期间托管区存在多个活动层，普通写操作需要显式 `--layer <id>`（或等价的 `--profile <id>`），否则会以 `CONFLICT` 拒绝。
 - 多个 `run` 可并存；清理只影响对应会话，不会覆盖其他命令在此期间对托管区的改写。
 - `run` 与 `undo` / 普通写入共用同一把工作区锁与 `--verify` 语义；`run list` / `run gc` 需要传入与启动时相同的 `--file` / `--data-dir`。
 
@@ -346,8 +417,10 @@ $HCLI run gc [--file <path>] [--data-dir <path>] [--dry-run] [--force] [--json]
 | `profile remove` | 是（profiles/） | 是 | 是 | 是 |
 | `profile update` | 是（profiles/；激活时连带 hosts） | 是 | 否（纯元数据；连带 hosts 变化仍可 undo） | 是 |
 | `profile use` / `save` | 是（hosts/profiles/state） | 是 | 是 | 是 |
+| `profile move` | 是（profiles/state；生效侧连带 hosts） | 是（成功 `write-ok`，失败 `move-failed`） | 是 | 是 |
 | `ttl list` / `due` | 否；到期时惰性结算并写 | 否；随结算写 | 否；随结算可 undo | 否；随结算写 |
-| `ttl pause` / `resume` / `extend` / `tick` | 是（hosts/state，仅变更时） | 是 | 是 | 是 |
+| `ttl pause` / `resume` / `extend` | 是（state） | 是 | 是 | 是 |
+| `ttl tick` | 是（hosts/state，仅变更时） | 是 | 是 | 是 |
 | `stack layer list` / `stack explain` | 否 | 否 | 否 | 否 |
 | `stack layer add` | 是（profiles/state） | 是 | 否（层导入不是 hosts 写入；可用 `profile remove` 反向） | 是 |
 | `stack layer enable` / `disable` | 是（state） | 是 | 否 | 是 |
@@ -424,7 +497,7 @@ printf '127.0.0.1 localhost\n\n# >>> hostscli managed (do not edit inside) >>>\n
 
 # 1) 查看
 node packages/cli/dist/index.js list \
-  --file /tmp/hostscli-demo/hosts --data-dir /tmp/hostscli-demo/data --skip-dns-flush
+  --file /tmp/hostscli-demo/hosts --data-dir /tmp/hostscli-demo/data
 
 # 2) 新增并预览
 node packages/cli/dist/index.js add 10.0.0.12 api.example.com \
@@ -447,6 +520,11 @@ node packages/cli/dist/index.js ttl tick --data-dir /tmp/hostscli-demo/data
 node packages/cli/dist/index.js profile create office --from-current \
   --file /tmp/hostscli-demo/hosts --data-dir /tmp/hostscli-demo/data
 node packages/cli/dist/index.js profile use office \
+  --file /tmp/hostscli-demo/hosts --data-dir /tmp/hostscli-demo/data --skip-dns-flush
+
+# 6.1) 把条目从一个方案迁到另一个方案
+node packages/cli/dist/index.js profile create prod --data-dir /tmp/hostscli-demo/data
+node packages/cli/dist/index.js profile move api.example.com --from office --to prod \
   --file /tmp/hostscli-demo/hosts --data-dir /tmp/hostscli-demo/data --skip-dns-flush
 
 # 7) 备份与恢复
