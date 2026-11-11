@@ -9,6 +9,7 @@ import type {
 import { formatRemaining } from '@hostscli/core/duration';
 import Table from 'cli-table3';
 import pc from 'picocolors';
+import { binName } from '../program-name';
 
 function entryStatus(entry: HostEntry): string {
   if (entry.ttl) return pc.magenta('ttl');
@@ -58,17 +59,44 @@ function renderTable(head: string[], rows: string[][]): string {
   return table.toString();
 }
 
-export function renderEntryTable(entries: HostEntry[]): string {
+export interface EntryTableOptions {
+  /** 是否在首列显示展示序号（仅渲染层，不写入 JSON）。 */
+  index?: boolean;
+}
+
+/**
+ * 方案名可能很长。表格不做自动换行，超长会挤压其它列，
+ * 因此按可见宽度截断并补省略号，保证列不串行。
+ */
+function truncate(text: string, max: number): string {
+  if (visibleLength(text) <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
+}
+
+export function renderEntryTable(entries: HostEntry[], options: EntryTableOptions = {}): string {
   if (entries.length === 0) return '（没有可显示的 hosts 条目）';
 
-  const rows = entries.map((entry) => [
+  const showIndex = options.index ?? false;
+  const head = [
+    ...(showIndex ? ['#'] : []),
+    'IP',
+    'HOSTNAMES',
+    'PROFILE',
+    'STATUS',
+    'SOURCE',
+    'COMMENT',
+  ];
+  const rows = entries.map((entry, position) => [
+    ...(showIndex ? [String(position + 1)] : []),
     entry.ip,
     entry.hostnames.join(', '),
+    // 非托管行不属于任何方案，显式用 '-' 区分，避免误导成 default 方案。
+    entry.source === 'managed' ? truncate(entry.layerId, 24) : pc.dim('-'),
     entryStatus(entry),
     entry.source,
     entry.comment ?? '',
   ]);
-  return renderTable(['IP', 'HOSTNAMES', 'STATUS', 'SOURCE', 'COMMENT'], rows);
+  return renderTable(head, rows);
 }
 
 export function renderTtlTable(views: TtlView[]): string {
@@ -94,7 +122,7 @@ export function renderTtlTable(views: TtlView[]): string {
 }
 
 export function renderProfileTable(views: ProfileView[]): string {
-  if (views.length === 0) return '（没有方案，可用 hostscli profile create 创建）';
+  if (views.length === 0) return `（没有方案，可用 ${binName()} profile create 创建）`;
 
   const rows = views.map((view) => [
     view.profile.id,
@@ -108,7 +136,7 @@ export function renderProfileTable(views: ProfileView[]): string {
 
 export function renderStackLayerTable(views: StackLayerView[]): string {
   if (views.length === 0) {
-    return '（没有规则层，可用 hostscli stack layer add <id> --file <path> 添加）';
+    return `（没有规则层，可用 ${binName()} stack layer add <id> --file <path> 添加）`;
   }
 
   const rows = views.map((view) => [
