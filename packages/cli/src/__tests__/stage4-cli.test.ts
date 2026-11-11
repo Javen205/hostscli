@@ -122,12 +122,18 @@ describe('阶段 4：CLI 导出格式与补全脚本', () => {
       if (!probe.error && probe.status === 0) {
         const file = join(dir, 'completion.ps1');
         writeFileSync(file, completionScript('powershell'));
-        const parseScript = [
-          '$tokens = $null; $errors = $null;',
-          '[void][System.Management.Automation.Language.Parser]::ParseFile($args[0], [ref]$tokens, [ref]$errors);',
-          'if ($errors -and $errors.Count -gt 0) { $errors | ForEach-Object { $_.Message }; exit 1 }',
-        ].join(' ');
-        const result = spawnSync('pwsh', ['-NoProfile', '-Command', parseScript, file], {
+        // -Command 之后的内容会被拼进命令文本，$args 拿不到路径，必须用 -File 传参。
+        const checker = join(dir, 'check-syntax.ps1');
+        writeFileSync(
+          checker,
+          [
+            'param([Parameter(Mandatory = $true)][string]$Path)',
+            '$tokens = $null; $errors = $null;',
+            '[void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors);',
+            'if ($errors -and $errors.Count -gt 0) { $errors | ForEach-Object { $_.Message }; exit 1 }',
+          ].join('\n'),
+        );
+        const result = spawnSync('pwsh', ['-NoProfile', '-File', checker, file], {
           encoding: 'utf8',
         });
         expect(result.stdout + result.stderr).toBe('');
