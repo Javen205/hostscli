@@ -129,7 +129,7 @@ export const COMMAND_ENTRIES: CommandEntry[] = [
   },
   {
     name: 'completion',
-    description: '输出 shell 补全脚本（bash / zsh / fish）',
+    description: '输出 shell 补全脚本（bash / zsh / fish / powershell；cmd 为 doskey 宏）',
     register: async (program) =>
       (await import('./commands/completion')).registerCompletionCommand(program),
   },
