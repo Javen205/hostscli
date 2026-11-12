@@ -23,6 +23,8 @@ pnpm add -g @javen205/hostscli
 hostscli --help
 ```
 
+安装后同时提供 `hostscli` 与 `hosts-cli` 两个等价命令名：指向同一入口、共用同一份数据目录与状态，可随意交替使用。注意 npm 上的 `hosts-cli` 是**别人的包**，不要执行 `npx hosts-cli` / `npm i -g hosts-cli`，只在已安装本包后使用该别名。
+
 写系统 hosts 需要相应权限：macOS / Linux 用 `sudo`，Windows 用管理员终端。macOS 与 Linux 使用 `/etc/hosts`，Windows 使用 `%SystemRoot%\System32\drivers\etc\hosts`；三平台的路径与命令分支已在 CI 覆盖，真实写入仍需提权。只想先看效果可以加 `--dry-run`。
 
 ### 30 秒上手

@@ -29,6 +29,7 @@ export {
   removeProfile,
   saveProfileFromCurrent,
   updateProfileMeta,
+  moveProfileEntry,
 } from './engine/profiles';
 export { createHostsBackup, listHostsBackups, restoreHostsBackup } from './engine/backup-service';
 export { showConfig, updateConfig, availableConfigKeys } from './engine/config-service';
@@ -137,6 +138,8 @@ export type {
   ListOptions,
   MutationResult,
   ProfileCreateOptions,
+  ProfileMoveOptions,
+  ProfileMoveResult,
   ProfileSaveOptions,
   ProfileUseOptions,
   ProfileView,

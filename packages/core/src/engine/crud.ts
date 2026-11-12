@@ -9,6 +9,7 @@ import type { HostEntry, HostsDocument } from '../hosts/models';
 import { normalizeHostname } from '../hosts/models';
 import { validateEntryInput } from '../hosts/validation';
 import type { Profile, ProfileEntry } from '../profiles/store';
+import { listProfileIds, profileEntriesToHostEntries, readProfile } from '../profiles/store';
 import { buildRenderPlan } from './plan';
 import { commitPlan } from './commit';
 import type { Workspace } from './context';
@@ -114,6 +115,67 @@ function pickTargetProfile(profiles: Profile[], layerId: string | undefined): Pr
   throw new InvalidInputError('当前启用了多个规则层，请用 --layer 指定写入哪个层。');
 }
 
+/**
+ * 方案视图的条目：与生效视图保持同一套状态语义——TTL 生效期间
+ * 条目视为禁用并附带 `ttl`，表格据此显示 `ttl_disabled`。
+ */
+function profileViewEntries(profile: Profile, workspace: Workspace): HostEntry[] {
+  return profileEntriesToHostEntries(profile).map((entry) => {
+    const record = workspace.state.ttl.find(
+      (candidate) => candidate.layerId === profile.id && candidate.entryId === entry.id,
+    );
+    if (!record) return entry;
+    return { ...entry, enabled: false, ttl: record };
+  });
+}
+
+/**
+ * 方案视图：列出指定方案（可含未生效）的条目。
+ *
+ * 非托管行不属于任何方案，若混进行里 PROFILE 只能显示 `-`，含义不清；
+ * 因此这里一律省略，并通过 `view.omittedExternal` 报出数量，
+ * 默认（生效）视图仍完整展示非托管区。
+ */
+async function listProfileView(
+  workspace: Workspace,
+  document: HostsDocument,
+  activeLayers: string[],
+  warnings: string[],
+  options: ListOptions,
+): Promise<HostsSnapshot> {
+  const allProfiles = options.allProfiles === true;
+  const ids = allProfiles
+    ? await listProfileIds(workspace.paths.profilesDir)
+    : [...new Set(options.profiles ?? [])];
+  const selected = await Promise.all(ids.map((id) => readProfile(workspace.paths.profilesDir, id)));
+  const entries = selected.flatMap((profile) =>
+    profileViewEntries(profile, workspace).sort((a, b) =>
+      (a.hostnames[0] ?? '').localeCompare(b.hostnames[0] ?? ''),
+    ),
+  );
+  const omittedExternal = document.entries.filter((entry) => entry.source === 'external').length;
+
+  return {
+    filePath: workspace.hostsPath,
+    activeLayers,
+    entries,
+    summary: {
+      managed: entries.length,
+      // summary 描述的是本次返回的 entries：方案视图不包含非托管行，故为 0。
+      // 被省略的真实数量见 view.omittedExternal。
+      external: 0,
+      disabled: entries.filter((entry) => !entry.ttl && !entry.enabled).length,
+      ttlDisabled: entries.filter((entry) => Boolean(entry.ttl)).length,
+    },
+    warnings,
+    view: {
+      mode: allProfiles ? 'all' : 'profiles',
+      profiles: ids,
+      omittedExternal,
+    },
+  };
+}
+
 export async function listHosts(options: ListOptions = {}): Promise<HostsSnapshot> {
   return withWorkspace(options, async (workspace) => {
     const { loaded, warnings } = await prepare(workspace);
@@ -121,6 +183,14 @@ export async function listHosts(options: ListOptions = {}): Promise<HostsSnapsho
       throw new HostsFormatError(`hosts 文件不存在：${workspace.hostsPath}`);
     }
     const { profiles } = await resolveActiveLayers(workspace, loaded.document, { persist: false });
+    const activeLayers = profiles.map((profile) => profile.id);
+
+    if (options.allProfiles || (options.profiles?.length ?? 0) > 0) {
+      if (options.allProfiles && (options.profiles?.length ?? 0) > 0) {
+        throw new InvalidInputError('--profile 与 --all-profiles 不能同时使用。');
+      }
+      return listProfileView(workspace, loaded.document, activeLayers, warnings, options);
+    }
 
     const plan = buildRenderPlan(workspace, loaded, profiles, {
       appendIfMissing: loaded.document.managedRange !== null,
@@ -141,7 +211,7 @@ export async function listHosts(options: ListOptions = {}): Promise<HostsSnapsho
 
     return {
       filePath: workspace.hostsPath,
-      activeLayers: profiles.map((profile) => profile.id),
+      activeLayers,
       entries,
       summary: {
         managed: plan.merged.entries.length,

@@ -16,7 +16,23 @@ export function registerAddCommand(program: Command): void {
     { json: true, dryRun: true, layer: true, onConflict: true, verify: true },
   )
     .option('--comment <text>', '为条目添加行内注释')
+    .option('--profile <id>', '写入指定方案（等价于 --layer；未指定时写入当前生效方案）')
     .action(async (ip: string, hostnames: string[], options) => {
+      if (
+        options.profile !== undefined &&
+        options.layer !== undefined &&
+        options.profile !== options.layer
+      ) {
+        throw Object.assign(
+          new Error(
+            `--profile 与 --layer 指向不同方案（${options.profile} / ${options.layer}）；` +
+              '二者等价，请只保留一个。',
+          ),
+          { code: 'INVALID_INPUT' },
+        );
+      }
+      const layerId = options.profile ?? options.layer;
+
       const { addHosts } = await import('@hostscli/core/crud');
       const filePath = await resolveTargetPath(options);
       warnSystemHosts(filePath, options, '写入');
@@ -26,7 +42,7 @@ export function registerAddCommand(program: Command): void {
         ip,
         hostnames,
         ...(options.comment !== undefined ? { comment: options.comment } : {}),
-        ...(options.layer !== undefined ? { layerId: options.layer } : {}),
+        ...(layerId !== undefined ? { layerId } : {}),
         onConflict: conflictStrategy(options),
       });
 

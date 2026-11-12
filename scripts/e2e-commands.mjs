@@ -9,7 +9,7 @@
  * - 每个用例独立目录，失败时打印退出码与 stderr 尾部，便于在 CI 日志定位。
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -143,6 +143,24 @@ const CASES = {
       ),
       'list 未区分非托管条目',
     );
+
+    // 别名回归：hosts-cli 指向同一入口，必须读到与 hostscli 完全相同的数据
+    //（数据目录、state、profiles 不因命令名分裂）。Windows 建 symlink 需额外权限，跳过。
+    if (!isWindows) {
+      const aliasPath = join(ctx.root, 'hosts-cli');
+      await symlink(cliPath, aliasPath);
+      const alias = spawnSync(aliasPath, ['list', ...workspace(ctx), '--json'], {
+        encoding: 'utf8',
+        timeout: STEP_TIMEOUT_MS,
+      });
+      assert(alias.status === 0, `hosts-cli 别名执行失败：${tail(alias.stderr)}`);
+      const aliasJson = JSON.parse(alias.stdout);
+      assert(
+        aliasJson.summary.managed === json.summary.managed &&
+          aliasJson.activeLayers.join(',') === json.activeLayers.join(','),
+        'hosts-cli 别名读到的数据与 hostscli 不一致',
+      );
+    }
   },
 
   async add(ctx) {
@@ -310,6 +328,9 @@ const CASES = {
 
     const shown = ctx.runJson(['profile', 'show', 'office', ...dataOnly(ctx), '--json']);
     assert(shown.id === 'office' && shown.name === 'Office', 'profile show 字段不符');
+    const shownText = ctx.run(['profile', 'show', 'office', ...dataOnly(ctx)]);
+    const shownHeader = shownText.stdout.split(/\r?\n/).find((line) => line.includes('HOSTNAMES'));
+    assert(Boolean(shownHeader) && shownHeader.includes('#'), 'profile show 表格缺少展示序号列');
 
     const updated = ctx.runJson([
       'profile',
@@ -331,6 +352,108 @@ const CASES = {
     assert(office?.active === true, 'profile use 后 office 未标记为启用');
     const saved = ctx.runJson(['profile', 'save', 'office', ...workspace(ctx), '--json']);
     assert(saved.entries.length === 1, 'profile save 未保存条目');
+
+    // 迁移：dup 从当前托管区导入同名条目，默认应拒绝；--force 覆盖后 hosts 中该条目消失。
+    const dup = ctx.runJson([
+      'profile',
+      'create',
+      'dup',
+      '--from-current',
+      ...workspace(ctx),
+      '--json',
+    ]);
+    assert(dup.entries.length === 1, 'profile create dup 应从当前托管区导入 1 条');
+    ctx.run(['profile', 'move', HOST, '--from', 'office', '--to', 'dup', ...workspace(ctx)], {
+      expect: 2,
+    });
+    const moved = ctx.runJson([
+      'profile',
+      'move',
+      HOST,
+      '--from',
+      'office',
+      '--to',
+      'dup',
+      '--force',
+      ...workspace(ctx),
+      '--json',
+    ]);
+    assert(moved.from === 'office' && moved.to === 'dup', 'profile move 返回字段不符');
+    assert(moved.replacedHostnames.includes(HOST), 'profile move --force 未记录被覆盖的主机名');
+    assert(moved.toActive === false, 'profile move 应报出目标方案未生效');
+    assert(!(await ctx.readHosts()).includes(HOST), '条目迁到未生效方案后仍留在 hosts');
+
+    // 未生效目标要给出明确提示与查看方式；迁回生效方案则不该提示。
+    const backToActive = ctx.run([
+      'profile',
+      'move',
+      HOST,
+      '--from',
+      'dup',
+      '--to',
+      'office',
+      ...workspace(ctx),
+    ]);
+    assert(!backToActive.stdout.includes('未生效'), '迁移到生效方案不应提示方案未生效');
+    const backToInactive = ctx.run([
+      'profile',
+      'move',
+      HOST,
+      '--from',
+      'office',
+      '--to',
+      'dup',
+      ...workspace(ctx),
+    ]);
+    assert(
+      backToInactive.stdout.includes('hostscli profile use dup'),
+      '迁移到未生效方案未提示切换方式',
+    );
+    assert(
+      backToInactive.stdout.includes('hostscli list --profile dup'),
+      '迁移到未生效方案未提示查看方式',
+    );
+
+    // 回归：条目迁到未生效方案后，默认 list 看不到，list --profile 必须能看到。
+    const effective = ctx.runJson(['list', ...workspace(ctx), '--json']);
+    assert(
+      !effective.entries.some((entry) => entry.hostnames.includes(HOST)),
+      '生效视图不应出现已迁走的条目',
+    );
+    const profileView = ctx.runJson(['list', '--profile', 'dup', ...workspace(ctx), '--json']);
+    assert(
+      profileView.entries.some((entry) => entry.hostnames.includes(HOST)),
+      'list --profile 未展示未生效方案里的条目',
+    );
+    assert(
+      !profileView.entries.some((entry) => entry.source === 'external'),
+      '方案视图不应混入非托管行',
+    );
+    assert(profileView.view?.mode === 'profiles', 'list --profile 缺少 view 字段');
+    assert(profileView.summary.external === 0, '方案视图 summary.external 应为 0');
+    assert(profileView.view.omittedExternal >= 1, '方案视图应报出被省略的非托管行数量');
+    const allView = ctx.runJson(['list', '--all-profiles', ...workspace(ctx), '--json']);
+    assert(allView.view?.mode === 'all', 'list --all-profiles 缺少 view 字段');
+    assert(
+      allView.entries.some((entry) => entry.hostnames.includes(HOST)),
+      'list --all-profiles 未展示未生效方案里的条目',
+    );
+
+    const officeAfterMove = ctx.runJson(['profile', 'show', 'office', ...dataOnly(ctx), '--json']);
+    assert(officeAfterMove.entries.length === 0, '迁移后源方案仍保留条目');
+    const audit = ctx.runJson([
+      'audit',
+      'list',
+      ...dataOnly(ctx),
+      '--command',
+      'profile move',
+      '--json',
+    ]);
+    assert(
+      audit.records.some((record) => record.action === 'move-failed' && record.ok === false),
+      '冲突迁移未写入 move-failed 审计',
+    );
+    ctx.runJson(['profile', 'remove', 'dup', ...dataOnly(ctx), '--json']);
 
     const empty = ctx.runJson(['profile', 'create', 'home', ...dataOnly(ctx), '--json']);
     assert(empty.entries.length === 0, 'profile create 未带 --from-current 应为空');
@@ -789,12 +912,27 @@ const CASES = {
   async completion(ctx) {
     const bash = ctx.run(['completion', 'bash']);
     assert(bash.stdout.includes('_hostscli_completions'), 'bash 补全脚本内容不符');
+    assert(bash.stdout.includes('hostscli hosts-cli'), 'bash 补全脚本未覆盖 hosts-cli 别名');
     const zsh = ctx.run(['completion', 'zsh']);
-    assert(zsh.stdout.includes('#compdef hostscli'), 'zsh 补全脚本内容不符');
+    assert(zsh.stdout.includes('#compdef hostscli hosts-cli'), 'zsh 补全脚本内容不符');
     const fish = ctx.run(['completion', 'fish']);
     assert(fish.stdout.includes('complete -c hostscli'), 'fish 补全脚本内容不符');
+    assert(fish.stdout.includes('complete -c hosts-cli'), 'fish 补全脚本未覆盖 hosts-cli 别名');
 
-    ctx.run(['completion', 'powershell'], { expect: 2 });
+    const ps = ctx.run(['completion', 'powershell']);
+    assert(
+      ps.stdout.includes('Register-ArgumentCompleter -Native -CommandName hostscli,hosts-cli'),
+      'PowerShell 补全未注册两个命令名',
+    );
+    assert(ps.stdout.includes('--on-conflict'), 'PowerShell 补全未覆盖 --on-conflict 取值');
+    assert(ps.stdout.includes('Get-HostsCliProfiles'), 'PowerShell 补全缺少动态 profile 取值');
+
+    const cmd = ctx.run(['completion', 'cmd']);
+    assert(cmd.stdout.includes('doskey h=hostscli $*'), 'cmd 宏文件缺少 hostscli 宏');
+    assert(cmd.stdout.includes('doskey hc=hosts-cli $*'), 'cmd 宏文件缺少 hosts-cli 宏');
+    assert(cmd.stdout.includes('不是补全'), 'cmd 输出未说明它只是宏、不是补全');
+
+    ctx.run(['completion', 'nushell'], { expect: 2 });
   },
 };
 

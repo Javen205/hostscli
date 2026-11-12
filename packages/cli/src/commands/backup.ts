@@ -1,9 +1,13 @@
 import type { Command } from 'commander';
 import pc from 'picocolors';
 import { addWorkspaceOptions, parseIntOption, printJson, workspaceOptions } from './common';
+import { binName } from '../program-name';
 
 export function registerBackupCommand(program: Command): void {
-  addWorkspaceOptions(program.command('backup').description('手动创建 hosts 备份'), { json: true })
+  addWorkspaceOptions(program.command('backup').description('手动创建 hosts 备份'), {
+    json: true,
+    dnsFlush: false,
+  })
     .option('--list', '列出已有备份（新→旧）')
     .option('--keep <n>', '保留最近 N 份备份', parseIntOption('--keep', { min: 0 }))
     .action(async (options) => {
@@ -33,6 +37,8 @@ export function registerBackupCommand(program: Command): void {
         return;
       }
       process.stdout.write(`已创建备份：${backup}\n`);
-      process.stdout.write(pc.dim('提示：恢复可用 hostscli restore 或 --from 指定这份备份。\n'));
+      process.stdout.write(
+        pc.dim(`提示：恢复可用 ${binName()} restore 或 --from 指定这份备份。\n`),
+      );
     });
 }

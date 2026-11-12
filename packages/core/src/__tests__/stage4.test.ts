@@ -382,65 +382,70 @@ describe('阶段 4：网络环境识别与切换', () => {
 });
 
 describe('阶段 4：数据目录 git 快照', () => {
-  it('init / snapshot / log / diff / rollback 全流程，回滚后重建 hosts', async () => {
-    const env = await makeEnv();
-    try {
-      await addLayer(env, 'office', '10.10.10.5', 10);
-      const initialized = await gitInit(env.options());
-      expect(initialized.initialized).toBe(true);
-      expect(initialized.gitDir.endsWith('.git')).toBe(true);
+  // 该用例真实 spawn 多次 git 进程；并行跑全量单测时接近默认 30s 上限，放宽到 120s 避免抖动误报。
+  it(
+    'init / snapshot / log / diff / rollback 全流程，回滚后重建 hosts',
+    { timeout: 120_000 },
+    async () => {
+      const env = await makeEnv();
+      try {
+        await addLayer(env, 'office', '10.10.10.5', 10);
+        const initialized = await gitInit(env.options());
+        expect(initialized.initialized).toBe(true);
+        expect(initialized.gitDir.endsWith('.git')).toBe(true);
 
-      const snapshot = await gitSnapshot({ ...env.options(), message: 'before change' });
-      expect(snapshot.created).toBe(true);
-      expect(snapshot.commit).toMatch(/^[0-9a-f]{40}$/);
+        const snapshot = await gitSnapshot({ ...env.options(), message: 'before change' });
+        expect(snapshot.created).toBe(true);
+        expect(snapshot.commit).toMatch(/^[0-9a-f]{40}$/);
 
-      await addLayer(env, 'office', '10.20.20.5', 10);
-      const dirty = await gitStatusOf(env.options());
-      expect(dirty.dirty).toBe(true);
+        await addLayer(env, 'office', '10.20.20.5', 10);
+        const dirty = await gitStatusOf(env.options());
+        expect(dirty.dirty).toBe(true);
 
-      const diff = await gitDiff({
-        ...env.options(),
-        rev: (snapshot.commit as string).slice(0, 7),
-      });
-      expect(diff.diff).toContain('10.20.20.5');
+        const diff = await gitDiff({
+          ...env.options(),
+          rev: (snapshot.commit as string).slice(0, 7),
+        });
+        expect(diff.diff).toContain('10.20.20.5');
 
-      const rolled = await gitRollback({
-        ...env.options(),
-        rev: (snapshot.commit as string).slice(0, 7),
-      });
-      expect(rolled.restored).toBe(snapshot.commit);
-      expect(rolled.mutation?.changed).toBe(true);
-      // 回滚前有一个未快照变更，必须先自动保存为保护快照，避免历史里找不回。
-      expect(rolled.safetyCommit).toMatch(/^[0-9a-f]{40}$/);
-      expect(rolled.warnings.some((warning) => warning.includes('保护快照'))).toBe(true);
+        const rolled = await gitRollback({
+          ...env.options(),
+          rev: (snapshot.commit as string).slice(0, 7),
+        });
+        expect(rolled.restored).toBe(snapshot.commit);
+        expect(rolled.mutation?.changed).toBe(true);
+        // 回滚前有一个未快照变更，必须先自动保存为保护快照，避免历史里找不回。
+        expect(rolled.safetyCommit).toMatch(/^[0-9a-f]{40}$/);
+        expect(rolled.warnings.some((warning) => warning.includes('保护快照'))).toBe(true);
 
-      const profile = await readProfile(join(env.dataDir, 'profiles'), 'office');
-      expect(profile.entries[0]?.ip).toBe('10.10.10.5');
-      const hostsText = await readFile(env.hostsPath, 'utf8');
-      expect(hostsText).toMatch(/10\.10\.10\.5\s+api\.example\.com/);
-      expect(hostsText).not.toContain('10.20.20.5');
-      expect(hostsText.startsWith('# keep this byte-for-byte\n')).toBe(true);
+        const profile = await readProfile(join(env.dataDir, 'profiles'), 'office');
+        expect(profile.entries[0]?.ip).toBe('10.10.10.5');
+        const hostsText = await readFile(env.hostsPath, 'utf8');
+        expect(hostsText).toMatch(/10\.10\.10\.5\s+api\.example\.com/);
+        expect(hostsText).not.toContain('10.20.20.5');
+        expect(hostsText.startsWith('# keep this byte-for-byte\n')).toBe(true);
 
-      // git 不记录权限位，回滚后必须由程序收紧到 0600。
-      // Windows 的 POSIX mode 位不可靠，跳过该断言。
-      if (process.platform !== 'win32') {
-        for (const path of [
-          join(env.dataDir, 'state.json'),
-          join(env.dataDir, 'profiles', 'office.json'),
-        ]) {
-          expect((await stat(path)).mode & 0o777).toBe(0o600);
+        // git 不记录权限位，回滚后必须由程序收紧到 0600。
+        // Windows 的 POSIX mode 位不可靠，跳过该断言。
+        if (process.platform !== 'win32') {
+          for (const path of [
+            join(env.dataDir, 'state.json'),
+            join(env.dataDir, 'profiles', 'office.json'),
+          ]) {
+            expect((await stat(path)).mode & 0o777).toBe(0o600);
+          }
         }
-      }
 
-      const log = await gitLog({ ...env.options(), limit: 5 });
-      expect(log.entries).toHaveLength(3);
-      expect(log.entries[0]?.subject).toContain('rollback to');
-      expect(log.entries[1]?.subject).toContain('auto snapshot before rollback');
-      expect(log.entries[2]?.subject).toBe('before change');
-    } finally {
-      await env.cleanup();
-    }
-  }, 30_000);
+        const log = await gitLog({ ...env.options(), limit: 5 });
+        expect(log.entries).toHaveLength(3);
+        expect(log.entries[0]?.subject).toContain('rollback to');
+        expect(log.entries[1]?.subject).toContain('auto snapshot before rollback');
+        expect(log.entries[2]?.subject).toBe('before change');
+      } finally {
+        await env.cleanup();
+      }
+    },
+  );
 
   it('git rollback 按 --file 指定的 hosts 重建，不触碰原目标', async () => {
     const env = await makeEnv();

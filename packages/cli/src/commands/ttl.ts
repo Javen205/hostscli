@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import {
+  addDataDirOption,
   addWorkspaceOptions,
   printJson,
   printMutation,
@@ -43,7 +44,7 @@ function ttlJson(result: {
 export function registerTtlCommand(program: Command): void {
   const ttl = program.command('ttl').description('管理单条记录的 TTL 定时禁用');
 
-  addWorkspaceOptions(ttl.command('list').description('列出 TTL 记录与倒计时'), { json: true })
+  addDataDirOption(ttl.command('list').description('列出 TTL 记录与倒计时'), { json: true })
     .option('--within <duration>', '只显示该时长内到期的记录')
     .action(async (options) => {
       const { listTtl } = await import('@hostscli/core/ttl');
@@ -59,7 +60,7 @@ export function registerTtlCommand(program: Command): void {
       process.stdout.write(`${renderTtlTable(result.records)}\n`);
     });
 
-  addWorkspaceOptions(ttl.command('due').description('列出即将到期的 TTL（默认 1 天）'), {
+  addDataDirOption(ttl.command('due').description('列出即将到期的 TTL（默认 1 天）'), {
     json: true,
   })
     .option('--within <duration>', '到期窗口，默认 1d')
@@ -80,6 +81,8 @@ export function registerTtlCommand(program: Command): void {
   addWorkspaceOptions(ttl.command('pause <hostname>').description('暂停 TTL 倒计时'), {
     json: true,
     layer: true,
+    file: false,
+    dnsFlush: false,
   }).action(async (hostname: string, options) => {
     const [{ pauseTtl }, { formatRemaining }] = await Promise.all([
       import('@hostscli/core/ttl'),
@@ -102,6 +105,8 @@ export function registerTtlCommand(program: Command): void {
   addWorkspaceOptions(ttl.command('resume <hostname>').description('恢复 TTL 倒计时'), {
     json: true,
     layer: true,
+    file: false,
+    dnsFlush: false,
   }).action(async (hostname: string, options) => {
     const { resumeTtl } = await import('@hostscli/core/ttl');
     const record = await resumeTtl({
@@ -119,6 +124,8 @@ export function registerTtlCommand(program: Command): void {
   addWorkspaceOptions(ttl.command('extend <hostname>').description('重置 TTL 到期时间'), {
     json: true,
     layer: true,
+    file: false,
+    dnsFlush: false,
   })
     .requiredOption('--for <duration>', '新的时长，例如 90m')
     .action(async (hostname: string, options) => {
@@ -141,6 +148,7 @@ export function registerTtlCommand(program: Command): void {
 
   addWorkspaceOptions(ttl.command('tick').description('结算所有已到期的 TTL（可放入 cron）'), {
     json: true,
+    verify: true,
   }).action(async (options) => {
     const { tickTtl } = await import('@hostscli/core/ttl');
     const result = await tickTtl(workspaceOptions(options));
@@ -162,7 +170,7 @@ function registerMutationSubcommand(
 ): void {
   const command = parent.command(`${name} <hostname>`).description(description);
   if (alias) command.alias(alias);
-  addWorkspaceOptions(command, { json: true, dryRun: true, layer: true }).action(
+  addWorkspaceOptions(command, { json: true, dryRun: true, layer: true, verify: true }).action(
     async (hostname: string, options) => {
       const core = await import('@hostscli/core/ttl');
       const filePath = await resolveTargetPath(options);

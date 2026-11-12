@@ -14,7 +14,8 @@ export type AuditAction =
   | 'undo-ok'
   | 'run-start'
   | 'run-cleanup'
-  | 'run-gc';
+  | 'run-gc'
+  | 'move-failed';
 
 export interface AuditFailure {
   hostname: string;
