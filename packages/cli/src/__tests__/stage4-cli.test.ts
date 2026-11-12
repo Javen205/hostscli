@@ -142,7 +142,8 @@ describe('阶段 4：CLI 导出格式与补全脚本', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+    // 四个 shell 各起一次进程，CI 上 pwsh 冷启动就可能超过 vitest 默认 5s。
+  }, 30_000);
 
   it('命令名按 argv[1] 自适应，未知入口回落到 hostscli', () => {
     expect(binNameFrom('/usr/local/bin/hostscli')).toBe('hostscli');
